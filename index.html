@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="配置驱动的 Markdown 文档站点" />
+    <title>Docs Kit</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar" id="topbar">
+        <div class="topbar__left">
+          <button class="mobile-menu-button icon-button" type="button" aria-label="打开导航" aria-expanded="false" data-action="toggle-sidebar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+          </button>
+          <a class="brand" href="/" aria-label="返回首页">
+            <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span class="brand-name">docs<span>kit</span></span>
+          </a>
+          <span class="brand-divider" aria-hidden="true"></span>
+          <span class="brand-context" id="brand-context">文档</span>
+        </div>
+        <div class="topbar__right" id="topbar-actions"></div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar" id="sidebar">
+          <div class="sidebar__scroll">
+            <div class="sidebar__intro" id="sidebar-intro"></div>
+            <nav class="side-nav" id="sidebar-nav" aria-label="文档导航"></nav>
+            <div class="sidebar__footer" id="sidebar-footer"></div>
+          </div>
+        </aside>
+
+        <main class="main-content" id="top">
+          <div class="content-wrap">
+            <div class="breadcrumb" id="breadcrumb"></div>
+            <article class="doc-article" id="doc-content" aria-live="polite">
+              <div class="loading-state"><span class="loading-spinner"></span>正在加载文档...</div>
+            </article>
+            <footer class="doc-footer" id="doc-footer"></footer>
+          </div>
+        </main>
+
+        <aside class="toc" aria-label="本页目录">
+          <div class="toc__inner">
+            <span class="toc__label">本页目录</span>
+            <div id="toc-list"></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <div class="mobile-overlay" data-action="close-sidebar"></div>
+    <div class="search-modal" role="dialog" aria-modal="true" aria-label="搜索文档" aria-hidden="true">
+      <div class="search-modal__backdrop" data-action="close-search"></div>
+      <div class="search-panel">
+        <div class="search-input-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3" /><path d="m16 16 4.5 4.5" /></svg><input id="search-input" type="search" placeholder="搜索文档标题、路径和正文..." autocomplete="off" /><kbd>ESC</kbd></div>
+        <div class="search-results" id="search-results"><span class="search-empty">输入关键词，搜索全部 Markdown 文档</span></div>
+        <div class="search-footer"><span>↑ ↓ 选择</span><span>↵ 打开</span><span>ESC 关闭</span></div>
+      </div>
+    </div>
+    <div class="toast-region" aria-live="polite"></div>
+    <script src="script.js"></script>
+  </body>
+</html>

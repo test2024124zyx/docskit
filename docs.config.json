@@ -1,0 +1,36 @@
+{
+  "docsDir": "docs",
+  "site": {
+    "brand": {
+      "name": "docs",
+      "accent": "kit"
+    },
+    "context": "知识库",
+    "eyebrow": "DOCUMENTATION",
+    "title": "我的文档",
+    "description": "将 Markdown 文件夹直接变成结构化文档站点"
+  },
+  "topbar": {
+    "version": "v1.0.0",
+    "links": [
+      { "label": "开始使用", "path": "getting-started/installation.md", "icon": "rocket" },
+      { "label": "组件", "path": "components/button.md", "icon": "blocks" },
+      { "label": "项目仓库", "href": "https://github.com/", "icon": "github", "external": true }
+    ],
+    "search": true,
+    "themeToggle": true
+  },
+  "sidebar": {
+    "defaultFileIcon": "file-text",
+    "defaultFolderIcon": "folder",
+    "icons": {
+      "getting-started": "rocket",
+      "components": "blocks",
+      "guides": "book-open",
+      "api": "code-2",
+      "components/button.md": "mouse-pointer-2",
+      "guides/writing-docs.md": "pencil-line",
+      "api/search.md": "search"
+    }
+  }
+}
