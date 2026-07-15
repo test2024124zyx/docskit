@@ -5,6 +5,7 @@
   "description": "A configurable Markdown documentation site",
   "scripts": {
     "dev": "node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test --experimental-test-coverage"
   }
 }

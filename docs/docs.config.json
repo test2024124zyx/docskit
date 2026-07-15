@@ -8,7 +8,7 @@
     "context": "知识库",
     "eyebrow": "DOCUMENTATION",
     "title": "我的文档",
-    "description": "将 Markdown 文件夹直接变成结构化文档站点"
+    "description": "按目录组织的 Markdown 知识库"
   },
   "topbar": {
     "version": "v1.0.0",

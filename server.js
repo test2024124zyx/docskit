@@ -5,8 +5,14 @@ const path = require("node:path");
 const { URL } = require("node:url");
 
 const ROOT_DIR = __dirname;
+const DEFAULT_PORT = 3000;
+const DEFAULT_DOCS_DIR = "docs";
+const CONFIG_FILE_NAME = "docs.config.json";
+const SEARCH_RESULT_LIMIT = 30;
+const DEFAULT_FILE_ICONS = ["file-text", "file", "file-code", "book-open", "code-2", "pencil-line", "rocket", "terminal", "database", "image"];
+const DEFAULT_FOLDER_ICONS = ["folder", "folder-open", "folder-plus", "blocks", "layout-dashboard", "package", "archive", "cloud", "server", "box"];
 const DEFAULT_CONFIG = {
-  docsDir: "docs",
+  docsDir: DEFAULT_DOCS_DIR,
   site: {
     brand: { name: "docs", accent: "kit" },
     context: "文档",
@@ -15,18 +21,21 @@ const DEFAULT_CONFIG = {
     description: "按目录组织的 Markdown 知识库"
   },
   topbar: {
-    version: "v1.0.0",
+    version: "",
     links: [],
     search: true,
     themeToggle: true
   },
   sidebar: {
-    defaultFileIcon: "file-text",
-    defaultFolderIcon: "folder",
+    defaultFileIcon: "",
+    defaultFolderIcon: "",
     icons: {},
     footer: {}
   }
 };
+
+const configCache = new Map();
+const documentIndexCache = new Map();
 
 function parseArgs(argv) {
   const args = {};
@@ -39,34 +48,81 @@ function parseArgs(argv) {
 }
 
 const cliArgs = parseArgs(process.argv.slice(2));
-const port = Number(cliArgs.port || process.env.PORT || 3000);
+const port = Number(cliArgs.port || process.env.PORT || DEFAULT_PORT);
+const host = process.env.HOST || "127.0.0.1";
+
+function isObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
 
 function mergeConfig(source) {
-  const input = source && typeof source === "object" ? source : {};
+  const input = isObject(source) ? source : {};
+  const site = isObject(input.site) ? input.site : {};
+  const topbar = isObject(input.topbar) ? input.topbar : {};
+  const sidebar = isObject(input.sidebar) ? input.sidebar : {};
   return {
     ...DEFAULT_CONFIG,
     ...input,
-    site: { ...DEFAULT_CONFIG.site, ...(input.site || {}) },
-    topbar: { ...DEFAULT_CONFIG.topbar, ...(input.topbar || {}) },
-    sidebar: { ...DEFAULT_CONFIG.sidebar, ...(input.sidebar || {}) }
+    site: { ...DEFAULT_CONFIG.site, ...site },
+    topbar: { ...DEFAULT_CONFIG.topbar, ...topbar },
+    sidebar: { ...DEFAULT_CONFIG.sidebar, ...sidebar }
   };
 }
 
 function resolveFromRoot(value) {
-  if (!value) return ROOT_DIR;
+  if (typeof value !== "string" || !value.trim()) return ROOT_DIR;
   return path.isAbsolute(value) ? path.normalize(value) : path.resolve(ROOT_DIR, value);
 }
 
-async function loadConfig() {
-  const configPath = resolveFromRoot(cliArgs.configPath || process.env.DOCS_CONFIG || "docs.config.json");
-  let parsed = {};
+function pathSetting(value, fallback) {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function getConfigPath() {
+  const explicitPath = cliArgs.configPath || process.env.DOCS_CONFIG;
+  if (explicitPath) return resolveFromRoot(explicitPath);
+  const docsHint = pathSetting(cliArgs.docsDir || process.env.DOCS_DIR, DEFAULT_DOCS_DIR);
+  return path.resolve(resolveFromRoot(docsHint), CONFIG_FILE_NAME);
+}
+
+function configFileSignature(stat) {
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+}
+
+async function readConfigFile(configPath) {
+  let fileSignature = "missing";
+  let fileStat;
   try {
-    parsed = JSON.parse(await fsp.readFile(configPath, "utf8"));
+    fileStat = await fsp.stat(configPath);
+    fileSignature = configFileSignature(fileStat);
   } catch (error) {
-    if (error.code !== "ENOENT") throw new Error(`无法读取配置文件 ${configPath}: ${error.message}`);
+    fileSignature = `${error.code || "error"}:${error.message}`;
+    const cached = configCache.get(configPath);
+    if (cached && cached.signature === fileSignature) return cached.value;
+    if (error.code !== "ENOENT") console.warn(`无法读取配置文件 ${configPath}，将使用默认配置：${error.message}`);
+    const value = {};
+    configCache.set(configPath, { signature: fileSignature, value });
+    return value;
   }
+
+  const cached = configCache.get(configPath);
+  if (cached && cached.signature === fileSignature) return cached.value;
+
+  let value = {};
+  try {
+    value = JSON.parse(await fsp.readFile(configPath, "utf8"));
+  } catch (error) {
+    console.warn(`配置文件 ${configPath} 无法解析，将使用默认配置：${error.message}`);
+  }
+  configCache.set(configPath, { signature: fileSignature, value });
+  return value;
+}
+
+async function loadConfig() {
+  const configPath = getConfigPath();
+  const parsed = await readConfigFile(configPath);
   const config = mergeConfig(parsed);
-  const docsSetting = cliArgs.docsDir || process.env.DOCS_DIR || config.docsDir || "docs";
+  const docsSetting = pathSetting(cliArgs.docsDir || process.env.DOCS_DIR || config.docsDir, DEFAULT_DOCS_DIR);
   return { config, configPath, docsDir: resolveFromRoot(docsSetting) };
 }
 
@@ -151,23 +207,47 @@ function compareNames(left, right) {
   return left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" });
 }
 
+function stableHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function fallbackIcon(relativePath, type) {
+  const icons = type === "directory" ? DEFAULT_FOLDER_ICONS : DEFAULT_FILE_ICONS;
+  return icons[stableHash(`${type}:${relativePath}`) % icons.length];
+}
+
+function iconValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
 function configuredIcon(sidebar, relativePath, type, frontMatterIcon) {
-  const settings = sidebar || {};
-  const generic = settings.icons || {};
-  const specific = type === "directory" ? settings.folderIcons || {} : settings.fileIcons || {};
+  const settings = isObject(sidebar) ? sidebar : {};
+  const generic = isObject(settings.icons) ? settings.icons : {};
+  const specificSetting = type === "directory" ? settings.folderIcons : settings.fileIcons;
+  const specific = isObject(specificSetting) ? specificSetting : {};
   const noExtension = relativePath.replace(/\.(markdown|md)$/i, "");
   const candidates = [relativePath, noExtension];
   if (type === "directory") candidates.push(relativePath.replace(/\/$/, ""));
   for (const key of candidates) {
-    if (specific[key]) return specific[key];
-    if (generic[key]) return generic[key];
+    const specificIcon = iconValue(specific[key]);
+    const genericIcon = iconValue(generic[key]);
+    if (specificIcon) return specificIcon;
+    if (genericIcon) return genericIcon;
   }
-  if (frontMatterIcon) return frontMatterIcon;
-  return type === "directory" ? settings.defaultFolderIcon : settings.defaultFileIcon;
+  const frontIcon = iconValue(frontMatterIcon);
+  if (frontIcon) return frontIcon;
+  const configuredDefault = iconValue(type === "directory" ? settings.defaultFolderIcon : settings.defaultFileIcon);
+  return configuredDefault || fallbackIcon(relativePath, type);
 }
 
 async function scanDocuments(docsDir) {
   const documents = [];
+  const directories = new Set();
   async function walk(directory, prefix) {
     let entries;
     try {
@@ -176,6 +256,7 @@ async function scanDocuments(docsDir) {
       if (error.code === "ENOENT") return;
       throw error;
     }
+    directories.add(directory);
     entries.sort((left, right) => {
       if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
       return compareNames(left.name, right.name);
@@ -189,7 +270,15 @@ async function scanDocuments(docsDir) {
         continue;
       }
       if (!/\.(md|markdown)$/i.test(entry.name)) continue;
-      const raw = await fsp.readFile(absolutePath, "utf8");
+      let raw;
+      let fileStat;
+      try {
+        raw = await fsp.readFile(absolutePath, "utf8");
+        fileStat = await fsp.stat(absolutePath);
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        throw error;
+      }
       const front = splitFrontMatter(raw);
       const baseName = entry.name.replace(/\.(markdown|md)$/i, "");
       const parent = prefix ? prefix.split("/").pop() : "";
@@ -205,12 +294,105 @@ async function scanDocuments(docsDir) {
         hidden: front.attributes.hidden === true,
         raw,
         body: front.body,
-        updatedAt: (await fsp.stat(absolutePath)).mtime.toISOString()
+        plainBody: stripMarkdown(front.body),
+        updatedAt: fileStat.mtime.toISOString()
       });
     }
   }
   await walk(docsDir, "");
-  return documents.filter((document) => !document.hidden);
+  const visibleDocuments = documents.filter((document) => !document.hidden);
+  visibleDocuments.forEach((document) => {
+    document.searchText = `${document.title}\n${document.path}\n${document.plainBody}`.toLocaleLowerCase();
+  });
+  return { documents: visibleDocuments, directories };
+}
+
+function createDocumentIndexState(docsDir) {
+  return {
+    docsDir,
+    documents: [],
+    dirty: true,
+    revision: 0,
+    promise: null,
+    watchers: new Map(),
+    watchUnavailable: false,
+    watchWarningShown: false
+  };
+}
+
+function markDocumentIndexDirty(state) {
+  state.dirty = true;
+  state.revision += 1;
+}
+
+function addDirectoryWatcher(state, directory) {
+  if (state.watchers.has(directory)) return true;
+  try {
+    const watcher = fs.watch(directory, { persistent: false }, () => markDocumentIndexDirty(state));
+    watcher.on("error", (error) => {
+      if (state.watchers.get(directory) === watcher) state.watchers.delete(directory);
+      state.watchUnavailable = true;
+      markDocumentIndexDirty(state);
+      if (!state.watchWarningShown) {
+        console.warn(`无法监听文档目录 ${directory}，将按请求重新检查：${error.message}`);
+        state.watchWarningShown = true;
+      }
+    });
+    state.watchers.set(directory, watcher);
+    return true;
+  } catch (error) {
+    state.watchUnavailable = true;
+    markDocumentIndexDirty(state);
+    if (!state.watchWarningShown) {
+      console.warn(`无法监听文档目录 ${directory}，将按请求重新检查：${error.message}`);
+      state.watchWarningShown = true;
+    }
+    return false;
+  }
+}
+
+function syncDirectoryWatchers(state, directories) {
+  const activeDirectories = new Set(Array.from(directories, (directory) => path.resolve(directory)));
+  let watcherUnavailable = false;
+  for (const directory of activeDirectories) {
+    addDirectoryWatcher(state, directory);
+    if (!state.watchers.has(directory)) watcherUnavailable = true;
+  }
+  for (const [directory, watcher] of state.watchers) {
+    if (activeDirectories.has(directory)) continue;
+    watcher.close();
+    state.watchers.delete(directory);
+  }
+  state.watchUnavailable = watcherUnavailable;
+  return activeDirectories.size > 0;
+}
+
+async function getDocuments(docsDir) {
+  const cacheKey = path.resolve(docsDir);
+  let state = documentIndexCache.get(cacheKey);
+  if (!state) {
+    state = createDocumentIndexState(cacheKey);
+    documentIndexCache.set(cacheKey, state);
+  }
+  if (!state.dirty && !state.watchUnavailable) return state.documents;
+  if (state.promise) return state.promise;
+
+  const scanRevision = state.revision;
+  state.promise = (async () => {
+    try {
+      const result = await scanDocuments(state.docsDir);
+      state.documents = result.documents;
+      const hasDirectoryToWatch = syncDirectoryWatchers(state, result.directories);
+      state.dirty = state.watchUnavailable || !hasDirectoryToWatch || state.revision !== scanRevision;
+      return state.documents;
+    } catch (error) {
+      state.dirty = true;
+      throw error;
+    } finally {
+      state.promise = null;
+    }
+  })();
+  return state.promise;
 }
 
 function sortNodes(nodes) {
@@ -419,14 +601,14 @@ function publicDocument(document, config) {
   };
 }
 
-function makeSearchSnippet(raw, query) {
-  const plain = stripMarkdown(raw).replace(/\n/g, " ");
-  const lower = plain.toLocaleLowerCase();
+function makeSearchSnippet(plain, query) {
+  const text = String(plain || "").replace(/\n/g, " ");
+  const lower = text.toLocaleLowerCase();
   const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const matchIndex = Math.max(0, ...terms.map((term) => lower.indexOf(term)).filter((value) => value >= 0));
   const start = Math.max(0, matchIndex - 54);
-  const end = Math.min(plain.length, start + 150);
-  return `${start > 0 ? "..." : ""}${plain.slice(start, end)}${end < plain.length ? "..." : ""}`;
+  const end = Math.min(text.length, start + 150);
+  return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
 }
 
 function makeSearchResults(documents, query, config) {
@@ -434,14 +616,14 @@ function makeSearchResults(documents, query, config) {
   if (!normalized) return [];
   const terms = normalized.split(/\s+/).filter(Boolean);
   return documents.map((document) => {
-    const haystack = `${document.title}\n${document.path}\n${stripMarkdown(document.body)}`.toLocaleLowerCase();
+    const haystack = document.searchText || `${document.title}\n${document.path}\n${document.plainBody || ""}`.toLocaleLowerCase();
     if (!terms.every((term) => haystack.includes(term))) return null;
     let score = 0;
     if (document.title.toLocaleLowerCase().includes(normalized)) score += 80;
     if (document.path.toLocaleLowerCase().includes(normalized)) score += 45;
     terms.forEach((term) => { score += (haystack.match(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length; });
-    return { path: document.path, title: document.title, description: document.description, snippet: makeSearchSnippet(document.body, normalized), score, icon: configuredIcon(config.sidebar, document.path, "file", document.icon) };
-  }).filter(Boolean).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, 30);
+    return { path: document.path, title: document.title, description: document.description, snippet: makeSearchSnippet(document.plainBody, normalized), score, icon: configuredIcon(config.sidebar, document.path, "file", document.icon) };
+  }).filter(Boolean).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, SEARCH_RESULT_LIMIT);
 }
 
 function jsonResponse(response, status, payload) {
@@ -461,12 +643,14 @@ async function sendFile(response, filePath) {
 
 async function handleRequest(request, response) {
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+  if (request.method !== "GET") return jsonResponse(response, 405, { error: "只支持 GET 请求" });
+  if (requestUrl.pathname === "/healthz") return jsonResponse(response, 200, { status: "ok", service: "docs-kit" });
+
   const current = await loadConfig();
   const { config, docsDir } = current;
-  if (request.method !== "GET") return jsonResponse(response, 405, { error: "只支持 GET 请求" });
 
   if (requestUrl.pathname === "/api/bootstrap") {
-    const documents = await scanDocuments(docsDir);
+    const documents = await getDocuments(docsDir);
     const tree = createTree(documents, config);
     const preferred = documents.find((document) => /(^|\/)index\.(md|markdown)$/i.test(document.path)) || documents.find((document) => /(^|\/)readme\.(md|markdown)$/i.test(document.path)) || documents[0];
     return jsonResponse(response, 200, { config, tree, defaultPath: preferred ? preferred.path : "", documents: documents.map((document) => ({ path: document.path, title: document.title, description: document.description, icon: configuredIcon(config.sidebar, document.path, "file", document.icon) })) });
@@ -476,14 +660,14 @@ async function handleRequest(request, response) {
     const requestedPath = requestUrl.searchParams.get("path") || "";
     const filePath = safeResolve(docsDir, requestedPath);
     if (!/\.(md|markdown)$/i.test(filePath)) return jsonResponse(response, 400, { error: "只支持 Markdown 文档" });
-    const documents = await scanDocuments(docsDir);
+    const documents = await getDocuments(docsDir);
     const document = documents.find((item) => item.path === normalizeRelative(requestedPath));
     if (!document) return jsonResponse(response, 404, { error: "文档不存在" });
     return jsonResponse(response, 200, publicDocument(document, config));
   }
 
   if (requestUrl.pathname === "/api/search") {
-    const documents = await scanDocuments(docsDir);
+    const documents = await getDocuments(docsDir);
     return jsonResponse(response, 200, { query: requestUrl.searchParams.get("q") || "", results: makeSearchResults(documents, requestUrl.searchParams.get("q") || "", config) });
   }
 
@@ -514,7 +698,8 @@ const server = http.createServer((request, response) => {
   });
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Docs site running at http://127.0.0.1:${port}`);
+// 容器通过 HOST=0.0.0.0 监听所有网卡，本地开发仍默认只绑定回环地址。
+server.listen(port, host, () => {
+  console.log(`Docs site running at http://${host}:${port}`);
   console.log(`Markdown directory: ${resolveFromRoot(cliArgs.docsDir || process.env.DOCS_DIR || "docs")}`);
 });

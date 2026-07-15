@@ -10,8 +10,9 @@ DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。它会递�
 - 支持 front matter 配置标题、摘要、排序和图标。
 - 侧边栏图标、顶部导航、品牌信息和主题开关均可配置。
 - 服务端全文搜索标题、路径和 Markdown 正文。
+- 文档索引按需构建并缓存在内存中，文件变化后下一次请求自动失效重建。
 - 支持浅色/深色主题和移动端导航抽屉。
-- 文档按需加载，新增文件后刷新页面即可重新索引。
+- 不主动刷新页面；修改文档、目录结构或配置后，刷新浏览器即可看到最新结果。
 
 ## 快速开始
 
@@ -32,6 +33,7 @@ npm run dev
 ```text
 docs/
 ├── README.md
+├── docs.config.json
 ├── getting-started/
 │   └── installation.md
 ├── guides/
@@ -61,9 +63,13 @@ npm run dev
 
 命令行参数优先级高于环境变量，环境变量优先级高于 `docs.config.json` 中的 `docsDir`。
 
+默认配置文件路径为 `docs/docs.config.json`。如果通过 `--docs` 或 `DOCS_DIR` 指定了文档目录，默认配置文件会从对应目录下查找；也可以使用 `--config` 或 `DOCS_CONFIG` 指定配置文件路径。
+
 ## 配置
 
-站点配置文件是 [docs.config.json](docs.config.json)。配置文件会在每次接口请求时读取，修改后刷新页面即可生效。
+站点配置文件是 [docs/docs.config.json](docs/docs.config.json)。配置文件会按文件变更缓存，修改后刷新页面即可生效。
+
+配置文件不是必需的。文件不存在、JSON 无效或只提供部分字段时，服务会使用默认配置继续运行：顶部自定义导航为空，未指定图标的文件和目录会按路径稳定选择内置图标。
 
 ### 站点和顶部导航
 
@@ -103,9 +109,19 @@ npm run dev
 }
 ```
 
-`sidebar.icons` 支持目录路径和 Markdown 相对路径。精确文件路径优先于目录路径，未配置的项目使用默认图标。
+`sidebar.icons` 支持目录路径和 Markdown 相对路径。精确文件路径优先于目录路径，未配置的项目使用默认图标；未配置默认图标时会使用按路径稳定选择的内置图标。
 
-当前内置图标包括：`folder`、`file-text`、`home`、`rocket`、`blocks`、`book-open`、`code-2`、`mouse-pointer-2`、`pencil-line`、`settings`、`search`、`github` 和 `download`。
+### 内置图标
+
+当前内置 **62** 个图标。配置文件中的 `icon`、`defaultFileIcon`、`defaultFolderIcon` 和 `sidebar.icons` 均可使用以下名称：
+
+| 分类 | 图标名称 |
+| --- | --- |
+| 文档与目录 | `file-text`、`file`、`file-plus`、`file-code`、`folder`、`folder-open`、`folder-plus`、`home`、`bookmark`、`archive`、`package`、`rocket`、`blocks`、`layout-dashboard`、`list`、`table` |
+| 开发与配置 | `book-open`、`code-2`、`terminal`、`braces`、`mouse-pointer-2`、`pencil-line`、`zap`、`settings`、`database`、`server`、`cloud`、`box`、`sliders-horizontal`、`filter`、`search` |
+| 通信与链接 | `github`、`globe-2`、`link`、`download`、`mail`、`message-circle`、`bell`、`user`、`users`、`calendar`、`clock`、`upload` |
+| 状态与媒体 | `check`、`check-circle`、`x-circle`、`info`、`alert-triangle`、`shield-check`、`lock`、`eye`、`star`、`heart`、`tag`、`image`、`copy` |
+| 界面操作 | `sun`、`moon`、`chevron-down`、`chevron-right`、`arrow-right`、`external-link` |
 
 ## Markdown 约定
 
@@ -142,8 +158,11 @@ Markdown 中的相对链接会在站点内切换文档：
 
 ```text
 .
-├── docs/                 # Markdown 文档目录
-├── docs.config.json      # 站点与导航配置
+├── .github/workflows/    # GitHub Actions 发布流程
+├── .dockerignore         # Docker 构建上下文排除项
+├── Dockerfile            # 生产镜像定义
+├── docs/                 # Markdown 文档与站点配置目录
+│   └── docs.config.json  # 站点与导航配置
 ├── index.html            # 页面外壳
 ├── script.js             # 浏览器端导航与交互
 ├── server.js             # 文档扫描、渲染和 HTTP 服务
@@ -155,6 +174,7 @@ Markdown 中的相对链接会在站点内切换文档：
 
 | 接口 | 说明 |
 | --- | --- |
+| `GET /healthz` | 返回服务健康状态，供容器编排平台探测 |
 | `GET /api/bootstrap` | 返回站点配置、导航树和默认文档 |
 | `GET /api/document?path=...` | 返回指定 Markdown 文档的渲染结果 |
 | `GET /api/search?q=...` | 搜索标题、路径和正文全文 |
@@ -168,4 +188,52 @@ Markdown 中的相对链接会在站点内切换文档：
 npm run dev
 ```
 
-项目不需要前端构建步骤。修改 `index.html`、`script.js` 或 `styles.css` 后刷新浏览器即可；修改 Markdown 文档或 `docs.config.json` 后同样刷新页面即可查看结果。
+项目不需要前端构建步骤。修改 `index.html`、`script.js` 或 `styles.css` 后刷新浏览器即可；修改 `docs/` 下的 Markdown 文档、目录结构或 `docs/docs.config.json` 后也只需刷新页面。服务不会自动刷新页面，也不提供代码热重载。
+
+服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求会共享同一次重建，不会重复读取全部 Markdown 文件。
+
+## Docker 发布
+
+GitHub Actions 会在推送任意 tag 时构建并推送 Docker 镜像，工作流文件位于 [.github/workflows/publish-docker.yml](.github/workflows/publish-docker.yml)。
+
+### 配置仓库凭据
+
+在 GitHub 仓库的 `Settings → Secrets and variables → Actions` 中配置：
+
+**Repository secrets**
+
+- `DOCKERHUB_USERNAME`：Docker Hub 用户名。
+- `DOCKERHUB_TOKEN`：Docker Hub Access Token，建议使用具有推送权限的专用 Token。
+
+**Repository variable**
+
+- `DOCKERHUB_REPOSITORY`：完整镜像名，例如 `yourname/docs-kit`。
+
+### 发布镜像
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+工作流会推送：
+
+- `docker.io/yourname/docs-kit:v1.0.0`
+- `docker.io/yourname/docs-kit:sha-<commit>`
+- 稳定 tag 额外推送 `docker.io/yourname/docs-kit:latest`
+
+运行镜像：
+
+```bash
+docker run --rm -p 3000:3000 yourname/docs-kit:v1.0.0
+```
+
+上面的命令使用镜像内置的 `docs/` 内容。若希望在容器运行期间编辑宿主机文档和配置，可以挂载 `docs/` 目录：
+
+```bash
+docker run --rm -p 3000:3000 \
+  -v "$PWD/docs:/app/docs" \
+  yourname/docs-kit:v1.0.0
+```
+
+挂载后，修改宿主机 `docs/` 下的 Markdown 文件、目录结构或 `docs.config.json`，刷新浏览器即可看到变化。健康检查地址为 <http://127.0.0.1:3000/healthz>。

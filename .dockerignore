@@ -1,0 +1,8 @@
+# 不将版本控制、依赖缓存和本地临时文件带入构建上下文。
+.git
+.github
+node_modules
+npm-debug.log*
+.chrome-*
+.docs-*.png
+*.log

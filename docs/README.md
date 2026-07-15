@@ -12,7 +12,7 @@ icon: home
 把新的 `.md` 文件放入 `docs/` 或任意子目录，刷新页面后它会自动出现在左侧导航中。目录层级会保留在导航中，文件名可以通过 Markdown 标题或 front matter 自定义。
 
 > [!NOTE]
-> 页面只读取 Markdown 内容，站点品牌、顶部导航和侧边栏图标由 `docs.config.json` 控制。
+> 页面只读取 Markdown 内容，站点品牌、顶部导航和侧边栏图标由当前目录下的 `docs.config.json` 控制。
 
 ## 你可以从这里开始
 
