@@ -192,48 +192,20 @@ npm run dev
 
 服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求会共享同一次重建，不会重复读取全部 Markdown 文件。
 
-## Docker 发布
 
-GitHub Actions 会在推送任意 tag 时构建并推送 Docker 镜像，工作流文件位于 [.github/workflows/publish-docker.yml](.github/workflows/publish-docker.yml)。
-
-### 配置仓库凭据
-
-在 GitHub 仓库的 `Settings → Secrets and variables → Actions` 中配置：
-
-**Repository secrets**
-
-- `DOCKERHUB_USERNAME`：Docker Hub 用户名。
-- `DOCKERHUB_TOKEN`：Docker Hub Access Token，建议使用具有推送权限的专用 Token。
-
-**Repository variable**
-
-- `DOCKERHUB_REPOSITORY`：完整镜像名，例如 `yourname/docs-kit`。
-
-### 发布镜像
+docker部署：
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+docker run --rm -p 3000:3000 zhuhanxin/docskit
 ```
 
-工作流会推送：
-
-- `docker.io/yourname/docs-kit:v1.0.0`
-- `docker.io/yourname/docs-kit:sha-<commit>`
-- 稳定 tag 额外推送 `docker.io/yourname/docs-kit:latest`
-
-运行镜像：
-
-```bash
-docker run --rm -p 3000:3000 yourname/docs-kit:v1.0.0
-```
-
-上面的命令使用镜像内置的 `docs/` 内容。若希望在容器运行期间编辑宿主机文档和配置，可以挂载 `docs/` 目录：
+上面的命令使用镜像内置的 `docs/` 内容。容器关闭内容就会丢失。
+若希望在容器运行期间编辑宿主机文档和配置持久化文档，可以挂载 `docs/` 目录：
 
 ```bash
 docker run --rm -p 3000:3000 \
   -v "$PWD/docs:/app/docs" \
-  yourname/docs-kit:v1.0.0
+  zhuhanxin/docskit
 ```
 
 挂载后，修改宿主机 `docs/` 下的 Markdown 文件、目录结构或 `docs.config.json`，刷新浏览器即可看到变化。健康检查地址为 <http://127.0.0.1:3000/healthz>。
