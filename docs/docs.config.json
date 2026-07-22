@@ -2,26 +2,56 @@
   "docsDir": "docs",
   "site": {
     "brand": {
-      "name": "docs",
-      "accent": "kit"
+      "name": "Docs",
+      "accent": "Kit"
     },
-    "context": "知识库",
-    "eyebrow": "DOCUMENTATION",
-    "title": "我的文档",
-    "description": "按目录组织的 Markdown 知识库"
+    "context": "官方文档",
+    "eyebrow": "DOCSKIT",
+    "title": "DocsKit 官方文档",
+    "description": "DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。",
+    "logo": "",
+    "favicon": "",
+    "ico": "",
+    "seo": {
+      "title": "DocsKit 官方文档",
+      "description": "DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。",
+      "keywords": ["DocsKit", "Markdown", "文档站点"],
+      "author": "DocsKit",
+      "robots": "index,follow",
+      "canonical": "",
+      "themeColor": "#3370ff"
+    },
+    "footer": {
+      "copyright": "© 2026 DocsKit",
+      "icp": "",
+      "beian": "",
+      "links": [
+        { "label": "智能体", "href": "https://chat.mymyjd.com", "external": true },
+        { "label": "免费 AI", "href": "https://aiapi.mymyjd.cn", "external": true },
+        { "label": "免费代理", "href": "https://proxy.mymyjd.com", "external": true }
+      ]
+    }
   },
   "topbar": {
-    "version": "v1.0.0",
+    "version": "v1.0.1",
     "links": [
       { "label": "开始使用", "path": "getting-started/installation.md", "icon": "rocket" },
-      { "label": "组件", "path": "components/button.md", "icon": "blocks" },
-      { "label": "项目仓库", "href": "https://github.com/", "icon": "github", "external": true }
+      { "label": "编写文档", "path": "guides/writing-docs.md", "icon": "pencil-line" },
+      { "label": "智能体", "href": "https://chat.mymyjd.com", "icon": "sparkles", "external": true },
+      { "label": "免费 AI", "href": "https://aiapi.mymyjd.cn", "icon": "zap", "external": true },
+      { "label": "免费代理", "href": "https://proxy.mymyjd.com", "icon": "globe-2", "external": true }
     ],
     "search": true,
     "themeToggle": true
   },
   "sidebar": {
-    "defaultFileIcon": "file-text",
+    "sort": "createdAt",
+    "iconStrategy": "modern",
+    "expandMode": "accordion",
+    "indent": 12,
+    "iconColor": "",
+    "iconPalette": ["#3370ff", "#7c3aed", "#0f9d8a", "#d97706", "#d95850"],
+    "defaultFileIcon": "file-markdown",
     "defaultFolderIcon": "folder",
     "icons": {
       "getting-started": "rocket",

@@ -8,6 +8,7 @@ DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。它会递�
 - 根据目录结构自动生成多级侧边栏。
 - 支持标题、段落、列表、表格、引用、代码块、图片和相对链接。
 - 支持 front matter 配置标题、摘要、排序和图标。
+- 支持在普通 Markdown 文本中使用 `:icon[name]` 展示内置图标。
 - 侧边栏图标、顶部导航、品牌信息和主题开关均可配置。
 - 服务端全文搜索标题、路径和 Markdown 正文。
 - 文档索引按需构建并缓存在内存中，文件变化后下一次请求自动失效重建。
@@ -78,7 +79,24 @@ npm run dev
   "site": {
     "brand": { "name": "docs", "accent": "kit" },
     "context": "知识库",
-    "title": "我的文档"
+    "title": "我的文档",
+    "logo": "assets/logo.png",
+    "favicon": "assets/favicon.ico",
+    "seo": {
+      "title": "我的文档",
+      "description": "默认 SEO 描述",
+      "keywords": ["文档", "Markdown"],
+      "author": "",
+      "robots": "index,follow",
+      "canonical": "",
+      "themeColor": ""
+    },
+    "footer": {
+      "copyright": "© 2026 我的文档",
+      "icp": "ICP备案号",
+      "beian": "公安备案号",
+      "links": [{ "label": "隐私政策", "href": "https://example.com/privacy", "external": true }]
+    }
   },
   "topbar": {
     "version": "v1.0.0",
@@ -99,8 +117,14 @@ npm run dev
 ```json
 {
   "sidebar": {
+    "sort": "createdAt",
+    "iconStrategy": "modern",
+    "expandMode": "accordion",
+    "indent": 16,
+    "iconColor": "",
+    "iconPalette": ["#3370ff", "#7c3aed", "#0f9d8a"],
     "defaultFolderIcon": "folder",
-    "defaultFileIcon": "file-text",
+    "defaultFileIcon": "file-markdown",
     "icons": {
       "components": "blocks",
       "components/button.md": "mouse-pointer-2"
@@ -109,16 +133,21 @@ npm run dev
 }
 ```
 
-`sidebar.icons` 支持目录路径和 Markdown 相对路径。精确文件路径优先于目录路径，未配置的项目使用默认图标；未配置默认图标时会使用按路径稳定选择的内置图标。
+`sidebar.sort` 支持 `createdAt` 和 `locale`。`order` 始终优先于全局排序方式；`createdAt` 按文件系统创建时间排序，无法提供创建时间时回退到变更时间；`locale` 按标题进行中文本地排序。
+
+`sidebar.iconStrategy` 支持 `default`、`modern` 和 `mixed`：默认策略让目录显示文件夹图标、Markdown 显示 Markdown 文件图标；现代策略顶级菜单使用稳定随机的多彩图标，子级菜单使用稳定随机的单色图标；混合策略顶级目录固定使用多彩文件夹图标，子级目录固定使用单色文件夹图标，文件按层级使用多彩或单色图标。
+
+`sidebar.icons` 支持目录路径和 Markdown 相对路径，精确文件路径优先于目录路径；`defaultFileIcon`、`defaultFolderIcon` 和 front matter 中的 `icon` 优先于默认策略。`iconPalette` 控制顶级多彩图标的颜色组合，策略会稳定选择最多 3 种颜色生成渐变；`iconColor` 会覆盖所有菜单图标并强制使用单色。`indent` 控制每级导航缩进，单位为像素，范围为 0 到 48。`expandMode` 为 `all` 时全部展开，为 `accordion` 时同级目录互斥展开。
 
 ### 内置图标
 
-当前内置 **62** 个图标。配置文件中的 `icon`、`defaultFileIcon`、`defaultFolderIcon` 和 `sidebar.icons` 均可使用以下名称：
+当前内置 **102** 个图标。配置文件中的 `icon`、`defaultFileIcon`、`defaultFolderIcon` 和 `sidebar.icons` 均可使用以下名称：
 
 | 分类 | 图标名称 |
 | --- | --- |
-| 文档与目录 | `file-text`、`file`、`file-plus`、`file-code`、`folder`、`folder-open`、`folder-plus`、`home`、`bookmark`、`archive`、`package`、`rocket`、`blocks`、`layout-dashboard`、`list`、`table` |
-| 开发与配置 | `book-open`、`code-2`、`terminal`、`braces`、`mouse-pointer-2`、`pencil-line`、`zap`、`settings`、`database`、`server`、`cloud`、`box`、`sliders-horizontal`、`filter`、`search` |
+| 文档与目录 | `file-text`、`file`、`file-plus`、`file-code`、`file-markdown`、`file-check`、`file-cog`、`file-search`、`file-heart`、`file-warning`、`file-lock`、`folder`、`folder-open`、`folder-plus`、`folder-tree`、`folder-cog`、`folder-search`、`folder-check`、`folder-git-2`、`folder-heart`、`folder-key`、`home`、`bookmark`、`archive`、`package`、`rocket`、`blocks`、`layout-dashboard`、`list`、`table` |
+| 开发与配置 | `book-open`、`code-2`、`terminal`、`braces`、`layers`、`network`、`workflow`、`component`、`brackets`、`binary`、`cpu`、`wrench`、`tool-case`、`settings`、`database`、`server`、`cloud`、`box`、`sliders-horizontal`、`filter`、`search` |
+| 内容与产品 | `mouse-pointer-2`、`pencil-line`、`zap`、`monitor`、`smartphone`、`map`、`megaphone`、`pin`、`history`、`circle-help`、`bookmark-check`、`book-marked`、`newspaper`、`scroll-text`、`notebook-tabs`、`text`、`graduation-cap`、`palette`、`sparkles`、`flag` |
 | 通信与链接 | `github`、`globe-2`、`link`、`download`、`mail`、`message-circle`、`bell`、`user`、`users`、`calendar`、`clock`、`upload` |
 | 状态与媒体 | `check`、`check-circle`、`x-circle`、`info`、`alert-triangle`、`shield-check`、`lock`、`eye`、`star`、`heart`、`tag`、`image`、`copy` |
 | 界面操作 | `sun`、`moon`、`chevron-down`、`chevron-right`、`arrow-right`、`external-link` |
@@ -153,6 +182,8 @@ Markdown 中的相对链接会在站点内切换文档：
 ```markdown
 [安装说明](../getting-started/installation.md)
 ```
+
+普通 Markdown 文本中可以使用 `:icon[name]` 展示内置图标，例如 `:icon[rocket]`。代码块和行内代码中的标记不会被替换。
 
 ## 项目结构
 

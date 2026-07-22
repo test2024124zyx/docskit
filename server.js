@@ -9,8 +9,27 @@ const DEFAULT_PORT = 3000;
 const DEFAULT_DOCS_DIR = "docs";
 const CONFIG_FILE_NAME = "docs.config.json";
 const SEARCH_RESULT_LIMIT = 30;
-const DEFAULT_FILE_ICONS = ["file-text", "file", "file-code", "book-open", "code-2", "pencil-line", "rocket", "terminal", "database", "image"];
-const DEFAULT_FOLDER_ICONS = ["folder", "folder-open", "folder-plus", "blocks", "layout-dashboard", "package", "archive", "cloud", "server", "box"];
+const SORT_MODE_CREATED_AT = "createdAt";
+const SORT_MODE_LOCALE = "locale";
+const DEFAULT_SORT_MODE = SORT_MODE_CREATED_AT;
+const ICON_STRATEGY_DEFAULT = "default";
+const ICON_STRATEGY_MODERN = "modern";
+const ICON_STRATEGY_MIXED = "mixed";
+const DEFAULT_ICON_STRATEGY = ICON_STRATEGY_DEFAULT;
+const EXPAND_MODE_ALL = "all";
+const EXPAND_MODE_ACCORDION = "accordion";
+const DEFAULT_EXPAND_MODE = EXPAND_MODE_ALL;
+const DEFAULT_NAV_INDENT = 12;
+const MIN_NAV_INDENT = 0;
+const MAX_NAV_INDENT = 48;
+const DEFAULT_FILE_ICON = "file-markdown";
+const DEFAULT_FOLDER_ICON = "folder";
+const DEFAULT_ICON_PALETTE = ["#3370ff", "#7c3aed", "#0f9d8a", "#d97706", "#d95850", "#0891b2", "#4f46e5", "#65a30d"];
+const MONO_FILE_ICONS = ["file-markdown", "file-text", "file", "file-plus", "file-code", "file-check", "file-cog", "file-search", "book-open", "scroll-text", "newspaper", "notebook-tabs", "text"];
+const MONO_FOLDER_ICONS = ["folder", "folder-open", "folder-plus", "folder-tree", "folder-cog", "folder-search", "folder-check"];
+const COLOR_FILE_ICONS = ["file-markdown", "file-text", "file-code", "book-open", "newspaper", "scroll-text", "graduation-cap", "notebook-tabs", "rocket", "palette", "sparkles", "flag"];
+const COLOR_FOLDER_ICONS = ["folder", "folder-open", "folder-tree", "folder-cog", "folder-git-2", "layers", "network", "workflow", "package", "blocks"];
+const MULTICOLOR_ICON_COLOR_COUNT = 3;
 const DEFAULT_CONFIG = {
   docsDir: DEFAULT_DOCS_DIR,
   site: {
@@ -18,7 +37,26 @@ const DEFAULT_CONFIG = {
     context: "文档",
     eyebrow: "DOCUMENTATION",
     title: "我的文档",
-    description: "按目录组织的 Markdown 知识库"
+    description: "按目录组织的 Markdown 知识库",
+    logo: "",
+    favicon: "",
+    ico: "",
+    seo: {
+      title: "",
+      description: "",
+      keywords: "",
+      image: "",
+      author: "",
+      robots: "",
+      canonical: "",
+      themeColor: ""
+    },
+    footer: {
+      copyright: "",
+      icp: "",
+      beian: "",
+      links: []
+    }
   },
   topbar: {
     version: "",
@@ -27,6 +65,12 @@ const DEFAULT_CONFIG = {
     themeToggle: true
   },
   sidebar: {
+    sort: DEFAULT_SORT_MODE,
+    iconStrategy: DEFAULT_ICON_STRATEGY,
+    expandMode: DEFAULT_EXPAND_MODE,
+    indent: DEFAULT_NAV_INDENT,
+    iconColor: "",
+    iconPalette: DEFAULT_ICON_PALETTE,
     defaultFileIcon: "",
     defaultFolderIcon: "",
     icons: {},
@@ -55,17 +99,73 @@ function isObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizeSortMode(value) {
+  const aliases = {
+    created: SORT_MODE_CREATED_AT,
+    creation: SORT_MODE_CREATED_AT,
+    creationTime: SORT_MODE_CREATED_AT,
+    name: SORT_MODE_LOCALE,
+    title: SORT_MODE_LOCALE,
+    localeCompare: SORT_MODE_LOCALE
+  };
+  const normalized = aliases[value] || value;
+  return normalized === SORT_MODE_LOCALE ? SORT_MODE_LOCALE : DEFAULT_SORT_MODE;
+}
+
+function normalizeIconStrategy(value) {
+  return [ICON_STRATEGY_DEFAULT, ICON_STRATEGY_MODERN, ICON_STRATEGY_MIXED].includes(value) ? value : DEFAULT_ICON_STRATEGY;
+}
+
+function normalizeExpandMode(value) {
+  return value === EXPAND_MODE_ACCORDION ? EXPAND_MODE_ACCORDION : DEFAULT_EXPAND_MODE;
+}
+
+function normalizeIndent(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return DEFAULT_NAV_INDENT;
+  return Math.min(MAX_NAV_INDENT, Math.max(MIN_NAV_INDENT, numericValue));
+}
+
+function normalizeIconPalette(value) {
+  const source = Array.isArray(value) ? value : DEFAULT_ICON_PALETTE;
+  const palette = source.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
+  return palette.length ? palette : [...DEFAULT_ICON_PALETTE];
+}
+
+// 统一归一化配置，避免错误值影响导航、品牌和页脚的运行时行为。
 function mergeConfig(source) {
   const input = isObject(source) ? source : {};
-  const site = isObject(input.site) ? input.site : {};
+  const siteInput = isObject(input.site) ? input.site : {};
+  const brand = isObject(siteInput.brand) ? siteInput.brand : {};
+  const seo = isObject(siteInput.seo) ? siteInput.seo : {};
+  const footer = isObject(siteInput.footer) ? siteInput.footer : {};
   const topbar = isObject(input.topbar) ? input.topbar : {};
-  const sidebar = isObject(input.sidebar) ? input.sidebar : {};
+  const sidebarInput = isObject(input.sidebar) ? input.sidebar : {};
+  const sidebar = {
+    ...DEFAULT_CONFIG.sidebar,
+    ...sidebarInput,
+    sort: normalizeSortMode(sidebarInput.sort),
+    iconStrategy: normalizeIconStrategy(sidebarInput.iconStrategy),
+    expandMode: normalizeExpandMode(sidebarInput.expandMode),
+    indent: normalizeIndent(sidebarInput.indent),
+    iconPalette: normalizeIconPalette(sidebarInput.iconPalette)
+  };
   return {
     ...DEFAULT_CONFIG,
     ...input,
-    site: { ...DEFAULT_CONFIG.site, ...site },
+    site: {
+      ...DEFAULT_CONFIG.site,
+      ...siteInput,
+      brand: { ...DEFAULT_CONFIG.site.brand, ...brand },
+      seo: { ...DEFAULT_CONFIG.site.seo, ...seo },
+      footer: {
+        ...DEFAULT_CONFIG.site.footer,
+        ...footer,
+        links: Array.isArray(footer.links) ? footer.links : []
+      }
+    },
     topbar: { ...DEFAULT_CONFIG.topbar, ...topbar },
-    sidebar: { ...DEFAULT_CONFIG.sidebar, ...sidebar }
+    sidebar
   };
 }
 
@@ -216,17 +316,25 @@ function stableHash(value) {
   return hash >>> 0;
 }
 
-function fallbackIcon(relativePath, type) {
-  const icons = type === "directory" ? DEFAULT_FOLDER_ICONS : DEFAULT_FILE_ICONS;
-  return icons[stableHash(`${type}:${relativePath}`) % icons.length];
-}
-
 function iconValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function configuredIcon(sidebar, relativePath, type, frontMatterIcon) {
-  const settings = isObject(sidebar) ? sidebar : {};
+function selectStableIcon(icons, relativePath, type, variant) {
+  return icons[stableHash(`${variant}:${type}:${relativePath}`) % icons.length];
+}
+
+// 创建时间优先使用 birthtime，当前文件系统不提供时回退到 ctime 和 mtime。
+function creationTime(stat) {
+  const candidates = [stat.birthtimeMs, stat.ctimeMs, stat.mtimeMs].map(Number);
+  const timestamp = candidates.find((value) => Number.isFinite(value) && value > 0) || 0;
+  return {
+    createdAtMs: timestamp || Number.MAX_SAFE_INTEGER,
+    createdAt: timestamp ? new Date(timestamp).toISOString() : ""
+  };
+}
+
+function findConfiguredIcon(settings, relativePath, type, frontMatterIcon) {
   const generic = isObject(settings.icons) ? settings.icons : {};
   const specificSetting = type === "directory" ? settings.folderIcons : settings.fileIcons;
   const specific = isObject(specificSetting) ? specificSetting : {};
@@ -241,22 +349,87 @@ function configuredIcon(sidebar, relativePath, type, frontMatterIcon) {
   }
   const frontIcon = iconValue(frontMatterIcon);
   if (frontIcon) return frontIcon;
+  return "";
+}
+
+function strategyIconColors(settings, relativePath, type, depth, strategy) {
+  const configuredColor = iconValue(settings.iconColor);
+  if (configuredColor) return [configuredColor];
+  if (depth !== 0 || strategy === ICON_STRATEGY_DEFAULT) return [];
+  const palette = normalizeIconPalette(settings.iconPalette);
+  const start = stableHash(`colors:${strategy}:${type}:${relativePath}`) % palette.length;
+  const count = Math.min(MULTICOLOR_ICON_COLOR_COUNT, palette.length);
+  return Array.from({ length: count }, (_, index) => palette[(start + index) % palette.length]);
+}
+
+function resolveIcon(sidebar, relativePath, type, frontMatterIcon, depth) {
+  const settings = isObject(sidebar) ? sidebar : {};
+  const strategy = normalizeIconStrategy(settings.iconStrategy);
+  const configured = findConfiguredIcon(settings, relativePath, type, frontMatterIcon);
+  const globalColor = iconValue(settings.iconColor);
+  if (configured) {
+    const colors = globalColor ? [globalColor] : strategyIconColors(settings, relativePath, type, depth, strategy);
+    return { name: configured, color: colors[0] || "", colors };
+  }
+
   const configuredDefault = iconValue(type === "directory" ? settings.defaultFolderIcon : settings.defaultFileIcon);
-  return configuredDefault || fallbackIcon(relativePath, type);
+  if (configuredDefault) {
+    const colors = globalColor ? [globalColor] : strategyIconColors(settings, relativePath, type, depth, strategy);
+    return { name: configuredDefault, color: colors[0] || "", colors };
+  }
+
+  const isTopLevel = depth === 0;
+  if (strategy === ICON_STRATEGY_MODERN) {
+    const icons = isTopLevel
+      ? (type === "directory" ? COLOR_FOLDER_ICONS : COLOR_FILE_ICONS)
+      : (type === "directory" ? MONO_FOLDER_ICONS : MONO_FILE_ICONS);
+    const colors = strategyIconColors(settings, relativePath, type, depth, strategy);
+    return {
+      name: selectStableIcon(icons, relativePath, type, `strategy:${strategy}`),
+      color: colors[0] || "",
+      colors
+    };
+  }
+  if (strategy === ICON_STRATEGY_MIXED) {
+    if (isTopLevel && type === "directory") {
+      const colors = strategyIconColors(settings, relativePath, type, depth, strategy);
+      return { name: DEFAULT_FOLDER_ICON, color: colors[0] || "", colors };
+    }
+    if (!isTopLevel && type === "directory") return { name: DEFAULT_FOLDER_ICON, color: globalColor, colors: globalColor ? [globalColor] : [] };
+    const icons = isTopLevel ? COLOR_FILE_ICONS : MONO_FILE_ICONS;
+    const colors = strategyIconColors(settings, relativePath, type, depth, strategy);
+    return {
+      name: selectStableIcon(icons, relativePath, type, `strategy:${strategy}`),
+      color: colors[0] || "",
+      colors
+    };
+  }
+
+  return {
+    name: type === "directory" ? DEFAULT_FOLDER_ICON : DEFAULT_FILE_ICON,
+    color: globalColor,
+    colors: globalColor ? [globalColor] : []
+  };
 }
 
 async function scanDocuments(docsDir) {
   const documents = [];
   const directories = new Set();
+  const directoryMetadata = new Map();
   async function walk(directory, prefix) {
     let entries;
+    let directoryStat;
     try {
-      entries = await fsp.readdir(directory, { withFileTypes: true });
+      [entries, directoryStat] = await Promise.all([
+        fsp.readdir(directory, { withFileTypes: true }),
+        fsp.stat(directory)
+      ]);
     } catch (error) {
       if (error.code === "ENOENT") return;
       throw error;
     }
     directories.add(directory);
+    directoryMetadata.set(prefix, creationTime(directoryStat));
     entries.sort((left, right) => {
       if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
       return compareNames(left.name, right.name);
@@ -295,7 +468,8 @@ async function scanDocuments(docsDir) {
         raw,
         body: front.body,
         plainBody: stripMarkdown(front.body),
-        updatedAt: fileStat.mtime.toISOString()
+        updatedAt: fileStat.mtime.toISOString(),
+        ...creationTime(fileStat)
       });
     }
   }
@@ -304,13 +478,14 @@ async function scanDocuments(docsDir) {
   visibleDocuments.forEach((document) => {
     document.searchText = `${document.title}\n${document.path}\n${document.plainBody}`.toLocaleLowerCase();
   });
-  return { documents: visibleDocuments, directories };
+  return { documents: visibleDocuments, directories, directoryMetadata };
 }
 
 function createDocumentIndexState(docsDir) {
   return {
     docsDir,
     documents: [],
+    directoryMetadata: new Map(),
     dirty: true,
     revision: 0,
     promise: null,
@@ -367,14 +542,18 @@ function syncDirectoryWatchers(state, directories) {
   return activeDirectories.size > 0;
 }
 
-async function getDocuments(docsDir) {
+function documentIndexResult(state) {
+  return { documents: state.documents, directoryMetadata: state.directoryMetadata };
+}
+
+async function getDocumentIndex(docsDir) {
   const cacheKey = path.resolve(docsDir);
   let state = documentIndexCache.get(cacheKey);
   if (!state) {
     state = createDocumentIndexState(cacheKey);
     documentIndexCache.set(cacheKey, state);
   }
-  if (!state.dirty && !state.watchUnavailable) return state.documents;
+  if (!state.dirty && !state.watchUnavailable) return documentIndexResult(state);
   if (state.promise) return state.promise;
 
   const scanRevision = state.revision;
@@ -382,9 +561,10 @@ async function getDocuments(docsDir) {
     try {
       const result = await scanDocuments(state.docsDir);
       state.documents = result.documents;
+      state.directoryMetadata = result.directoryMetadata;
       const hasDirectoryToWatch = syncDirectoryWatchers(state, result.directories);
       state.dirty = state.watchUnavailable || !hasDirectoryToWatch || state.revision !== scanRevision;
-      return state.documents;
+      return documentIndexResult(state);
     } catch (error) {
       state.dirty = true;
       throw error;
@@ -395,15 +575,16 @@ async function getDocuments(docsDir) {
   return state.promise;
 }
 
-function sortNodes(nodes) {
+function sortNodes(nodes, sortMode) {
   return nodes.sort((left, right) => {
     if (left.order !== right.order) return left.order - right.order;
     if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
+    if (sortMode === SORT_MODE_CREATED_AT && left.createdAtMs !== right.createdAtMs) return left.createdAtMs - right.createdAtMs;
     return compareNames(left.title, right.title);
   });
 }
 
-function createTree(documents, config) {
+function createTree(documents, config, directoryMetadata = new Map()) {
   const root = { type: "directory", path: "", title: "", children: [] };
   for (const document of documents) {
     const segments = document.path.split("/");
@@ -412,30 +593,41 @@ function createTree(documents, config) {
       const folderPath = segments.slice(0, index + 1).join("/");
       let folder = current.children.find((node) => node.type === "directory" && node.path === folderPath);
       if (!folder) {
+        const metadata = directoryMetadata.get(folderPath) || creationTime({});
+        const icon = resolveIcon(config.sidebar, folderPath, "directory", "", index);
         folder = {
           type: "directory",
           path: folderPath,
           title: humanizeName(segments[index]),
           order: Number.MAX_SAFE_INTEGER,
-          icon: configuredIcon(config.sidebar, folderPath, "directory"),
+          icon: icon.name,
+          iconColor: icon.color,
+          iconColors: icon.colors,
+          createdAt: metadata.createdAt,
+          createdAtMs: metadata.createdAtMs,
           children: []
         };
         current.children.push(folder);
       }
       current = folder;
     }
+    const icon = resolveIcon(config.sidebar, document.path, "file", document.icon, segments.length - 1);
     current.children.push({
       type: "file",
       path: document.path,
       title: document.title,
       description: document.description,
       order: document.order,
-      icon: configuredIcon(config.sidebar, document.path, "file", document.icon),
-      updatedAt: document.updatedAt
+      icon: icon.name,
+      iconColor: icon.color,
+      iconColors: icon.colors,
+      updatedAt: document.updatedAt,
+      createdAt: document.createdAt,
+      createdAtMs: document.createdAtMs
     });
   }
   function sortTree(node) {
-    sortNodes(node.children);
+    sortNodes(node.children, config.sidebar.sort);
     node.children.forEach((child) => { if (child.type === "directory") sortTree(child); });
   }
   sortTree(root);
@@ -471,7 +663,7 @@ function markdownTarget(rawTarget, currentPath, kind) {
 }
 
 function renderInline(source, currentPath) {
-  const pattern = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)|\[([^\]]+)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|(?<!\w)\*([^*]+)\*(?!\w)/g;
+  const pattern = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)|\[([^\]]+)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|(?<!\w)\*([^*]+)\*(?!\w)|:icon\[([A-Za-z][\w-]*)\]/g;
   let result = "";
   let cursor = 0;
   let match;
@@ -491,6 +683,7 @@ function renderInline(source, currentPath) {
     else if (match[8] !== undefined || match[9] !== undefined) result += `<strong>${escapeHtml(match[8] || match[9])}</strong>`;
     else if (match[10] !== undefined) result += `<del>${escapeHtml(match[10])}</del>`;
     else if (match[11] !== undefined) result += `<em>${escapeHtml(match[11])}</em>`;
+    else if (match[12] !== undefined) result += `<span class="markdown-icon" data-icon-name="${escapeHtml(match[12])}" role="img" aria-label="${escapeHtml(match[12])}"></span>`;
     cursor = pattern.lastIndex;
   }
   return result + escapeHtml(source.slice(cursor));
@@ -588,8 +781,13 @@ function renderMarkdown(source, currentPath) {
   return { html: html.join("\n"), headings };
 }
 
+function documentIcon(config, document) {
+  return resolveIcon(config.sidebar, document.path, "file", document.icon, document.path.split("/").length - 1);
+}
+
 function publicDocument(document, config) {
   const rendered = renderMarkdown(document.body, document.path);
+  const icon = documentIcon(config, document);
   return {
     path: document.path,
     title: document.title,
@@ -597,7 +795,10 @@ function publicDocument(document, config) {
     html: rendered.html,
     headings: rendered.headings,
     updatedAt: document.updatedAt,
-    icon: configuredIcon(config.sidebar, document.path, "file", document.icon)
+    createdAt: document.createdAt,
+    icon: icon.name,
+    iconColor: icon.color,
+    iconColors: icon.colors
   };
 }
 
@@ -622,7 +823,8 @@ function makeSearchResults(documents, query, config) {
     if (document.title.toLocaleLowerCase().includes(normalized)) score += 80;
     if (document.path.toLocaleLowerCase().includes(normalized)) score += 45;
     terms.forEach((term) => { score += (haystack.match(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length; });
-    return { path: document.path, title: document.title, description: document.description, snippet: makeSearchSnippet(document.plainBody, normalized), score, icon: configuredIcon(config.sidebar, document.path, "file", document.icon) };
+    const icon = documentIcon(config, document);
+    return { path: document.path, title: document.title, description: document.description, snippet: makeSearchSnippet(document.plainBody, normalized), score, icon: icon.name, iconColor: icon.color, iconColors: icon.colors };
   }).filter(Boolean).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, SEARCH_RESULT_LIMIT);
 }
 
@@ -632,7 +834,7 @@ function jsonResponse(response, status, payload) {
   response.end(body);
 }
 
-const MIME_TYPES = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp", ".ico": "image/x-icon", ".pdf": "application/pdf" };
+const MIME_TYPES = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon", ".pdf": "application/pdf" };
 
 async function sendFile(response, filePath) {
   const data = await fsp.readFile(filePath);
@@ -641,33 +843,40 @@ async function sendFile(response, filePath) {
   response.end(data);
 }
 
-async function handleRequest(request, response) {
+async function handleRequest(request, response, options = {}) {
+  const loadCurrentConfig = typeof options.loadConfig === "function" ? options.loadConfig : loadConfig;
+  const loadIndex = typeof options.getDocumentIndex === "function" ? options.getDocumentIndex : getDocumentIndex;
+  const rootDir = options.rootDir || ROOT_DIR;
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   if (request.method !== "GET") return jsonResponse(response, 405, { error: "只支持 GET 请求" });
   if (requestUrl.pathname === "/healthz") return jsonResponse(response, 200, { status: "ok", service: "docs-kit" });
 
-  const current = await loadConfig();
+  const current = await loadCurrentConfig();
   const { config, docsDir } = current;
 
   if (requestUrl.pathname === "/api/bootstrap") {
-    const documents = await getDocuments(docsDir);
-    const tree = createTree(documents, config);
+    const index = await loadIndex(docsDir);
+    const { documents, directoryMetadata } = index;
+    const tree = createTree(documents, config, directoryMetadata);
     const preferred = documents.find((document) => /(^|\/)index\.(md|markdown)$/i.test(document.path)) || documents.find((document) => /(^|\/)readme\.(md|markdown)$/i.test(document.path)) || documents[0];
-    return jsonResponse(response, 200, { config, tree, defaultPath: preferred ? preferred.path : "", documents: documents.map((document) => ({ path: document.path, title: document.title, description: document.description, icon: configuredIcon(config.sidebar, document.path, "file", document.icon) })) });
+    return jsonResponse(response, 200, { config, tree, defaultPath: preferred ? preferred.path : "", documents: documents.map((document) => {
+      const icon = documentIcon(config, document);
+      return { path: document.path, title: document.title, description: document.description, icon: icon.name, iconColor: icon.color, iconColors: icon.colors, createdAt: document.createdAt };
+    }) });
   }
 
   if (requestUrl.pathname === "/api/document") {
     const requestedPath = requestUrl.searchParams.get("path") || "";
     const filePath = safeResolve(docsDir, requestedPath);
     if (!/\.(md|markdown)$/i.test(filePath)) return jsonResponse(response, 400, { error: "只支持 Markdown 文档" });
-    const documents = await getDocuments(docsDir);
+    const { documents } = await loadIndex(docsDir);
     const document = documents.find((item) => item.path === normalizeRelative(requestedPath));
     if (!document) return jsonResponse(response, 404, { error: "文档不存在" });
     return jsonResponse(response, 200, publicDocument(document, config));
   }
 
   if (requestUrl.pathname === "/api/search") {
-    const documents = await getDocuments(docsDir);
+    const { documents } = await loadIndex(docsDir);
     return jsonResponse(response, 200, { query: requestUrl.searchParams.get("q") || "", results: makeSearchResults(documents, requestUrl.searchParams.get("q") || "", config) });
   }
 
@@ -682,24 +891,79 @@ async function handleRequest(request, response) {
 
   const pathname = requestUrl.pathname === "/" ? "/index.html" : requestUrl.pathname;
   let staticPath;
-  try { staticPath = safeResolve(ROOT_DIR, pathname); } catch (error) { return jsonResponse(response, 400, { error: error.message }); }
+  try { staticPath = safeResolve(rootDir, pathname); } catch (error) { return jsonResponse(response, 400, { error: error.message }); }
   if (staticPath.startsWith(docsDir)) return jsonResponse(response, 403, { error: "禁止访问" });
   try { return await sendFile(response, staticPath); } catch (error) {
-    if (error.code === "ENOENT") return sendFile(response, path.join(ROOT_DIR, "index.html"));
+    if (error.code === "ENOENT") return sendFile(response, path.join(rootDir, "index.html"));
     throw error;
   }
 }
 
-const server = http.createServer((request, response) => {
-  handleRequest(request, response).catch((error) => {
-    console.error(error);
-    if (!response.headersSent) jsonResponse(response, 500, { error: error.message || "服务器错误" });
-    else response.end();
+function createServer(options = {}) {
+  const requestHandler = options.handleRequest || ((request, response) => handleRequest(request, response, options));
+  return http.createServer((request, response) => {
+    requestHandler(request, response).catch((error) => {
+      console.error(error);
+      if (!response.headersSent) jsonResponse(response, 500, { error: error.message || "服务器错误" });
+      else response.end();
+    });
   });
-});
+}
 
-// 容器通过 HOST=0.0.0.0 监听所有网卡，本地开发仍默认只绑定回环地址。
-server.listen(port, host, () => {
-  console.log(`Docs site running at http://${host}:${port}`);
-  console.log(`Markdown directory: ${resolveFromRoot(cliArgs.docsDir || process.env.DOCS_DIR || "docs")}`);
-});
+function startServer() {
+  const server = createServer();
+  // 容器通过 HOST=0.0.0.0 监听所有网卡，本地开发仍默认只绑定回环地址。
+  server.listen(port, host, () => {
+    console.log(`Docs site running at http://${host}:${port}`);
+    console.log(`Markdown directory: ${resolveFromRoot(cliArgs.docsDir || process.env.DOCS_DIR || "docs")}`);
+  });
+  return server;
+}
+
+if (require.main === module) startServer();
+
+module.exports = {
+  DEFAULT_CONFIG,
+  parseArgs,
+  mergeConfig,
+  resolveFromRoot,
+  pathSetting,
+  configFileSignature,
+  readConfigFile,
+  loadConfig,
+  normalizeRelative,
+  safeResolve,
+  toPosix,
+  parseValue,
+  splitFrontMatter,
+  stripMarkdown,
+  humanizeName,
+  firstHeading,
+  firstParagraph,
+  compareNames,
+  stableHash,
+  iconValue,
+  selectStableIcon,
+  creationTime,
+  findConfiguredIcon,
+  strategyIconColors,
+  resolveIcon,
+  scanDocuments,
+  createDocumentIndexState,
+  markDocumentIndexDirty,
+  syncDirectoryWatchers,
+  getDocumentIndex,
+  sortNodes,
+  createTree,
+  renderInline,
+  renderMarkdown,
+  documentIcon,
+  publicDocument,
+  makeSearchSnippet,
+  makeSearchResults,
+  jsonResponse,
+  sendFile,
+  handleRequest,
+  createServer,
+  startServer
+};

@@ -1,28 +1,27 @@
 ---
-title: Button 按钮
-description: 用于触发一个操作的基础组件文档。
+title: 页面操作
+description: 了解 DocsKit 页面中的导航、搜索和主题操作。
 order: 1
 icon: mouse-pointer-2
 ---
 
-# Button 按钮
+# 页面操作
 
-按钮用于触发明确的用户操作。优先使用简短、具体的动词作为按钮文案。
+DocsKit 的页面操作集中在顶部栏、侧边栏和文档内容区域。按钮文案和无障碍标签会直接说明动作，避免让读者猜测用途。
 
-## 基础用法
+## 顶部栏
 
-```tsx
-import { Button } from '@lumos-ui/react';
+- 搜索按钮打开全文搜索框。
+- 主题按钮在浅色和深色主题之间切换。
+- 版本按钮显示当前配置中的版本号。
+- 自定义链接可以跳转到站内文档或外部页面。
 
-<Button theme="solid">保存更改</Button>
-```
+顶部栏的显示内容由 `docs.config.json` 中的 `topbar` 配置控制。
 
-## 变体
+## 侧边栏
 
-| 变体 | 使用场景 |
-| --- | --- |
-| Solid | 页面中的主要操作 |
-| Outline | 次要操作或并列操作 |
-| Text | 低优先级操作 |
+- 点击目录分组标题可以展开或收起子项。
+- `expandMode: "all"` 默认展开全部目录，`expandMode: "accordion"` 让同级目录互斥展开。
+- 移动端使用顶部的菜单按钮打开侧边栏，点击遮罩层可以关闭。
 
-更多组件可以继续放入 `docs/components/`，目录会自动生成导航层级。
+搜索操作的详细说明见[全文搜索](../api/search.md)，侧边栏的完整配置见[配置文件](../api/configuration.md)。

@@ -1,4 +1,5 @@
 (function () {
+  const DEFAULT_NAV_INDENT = 12;
   const body = document.body;
   const state = {
     config: null,
@@ -11,6 +12,7 @@
     searchTimer: null,
     headingObserver: null
   };
+  let iconGradientSequence = 0;
 
   const $ = (selector) => document.querySelector(selector);
   const sidebar = $("#sidebar");
@@ -25,9 +27,24 @@
     file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/>',
     "file-plus": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/>',
     "file-code": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M10 13l-2 2 2 2M14 13l2 2-2 2"/>',
+    // 文档和目录图标扩展，供默认策略和配置文件共同使用。
+    "file-markdown": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13l2 3 2-5 2 5 2-3"/>',
+    "file-check": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 16l2 2 5-5"/>',
+    "file-cog": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM12 11v1M12 18v1M6.8 14l.9.5M16.3 14l-.9.5"/>',
+    "file-search": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M10.5 17a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM13 15l2 2"/>',
+    "file-heart": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 18s-4-2.2-4-4.6A2.4 2.4 0 0 1 12 12a2.4 2.4 0 0 1 4 1.4C16 15.8 12 18 12 18Z"/>',
+    "file-warning": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 12v3M12 18h.01"/>',
+    "file-lock": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M9 15h6v5H9zM10 15v-2a2 2 0 0 1 4 0v2"/>',
     folder: '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/>',
     "folder-open": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v1H6a2 2 0 0 0-1.9 1.4L3 14Z"/><path d="M3 14h17l-1.2 4.2A2.5 2.5 0 0 1 16.4 20H6a3 3 0 0 1-2.9-3.8Z"/>',
     "folder-plus": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><path d="M12 17v-6M9 14h6"/>',
+    "folder-tree": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><path d="M12 10v8M8 13h8M8 13v3M16 13v3"/>',
+    "folder-cog": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><path d="M12 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM12 10v1M12 17v1M8.8 12.5l.9.5M15.2 12.5l-.9.5"/>',
+    "folder-search": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><circle cx="11" cy="13" r="3"/><path d="m13.2 15.2 2.3 2.3"/>',
+    "folder-check": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><path d="m8 14 2.5 2.5L16 11"/>',
+    "folder-git-2": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><circle cx="9" cy="13" r="1.5"/><circle cx="15" cy="13" r="1.5"/><path d="M10.5 13h3M9 14.5v2M15 14.5v2"/>',
+    "folder-heart": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><path d="M12 17s-3-1.7-3-3.6A1.9 1.9 0 0 1 12 12a1.9 1.9 0 0 1 3 1.4C15 15.3 12 17 12 17Z"/>',
+    "folder-key": '<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/><circle cx="10" cy="14" r="2"/><path d="m11.5 15.5 3 3M13.5 17.5l1-1"/>',
     home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9 21v-7h6v7"/>',
     bookmark: '<path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/>',
     archive: '<path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/>',
@@ -49,6 +66,32 @@
     server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
     cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
     box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/>',
+    layers: '<path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 17l9 5 9-5"/>',
+    network: '<rect width="6" height="6" x="9" y="2" rx="1"/><rect width="6" height="6" x="2" y="16" rx="1"/><rect width="6" height="6" x="16" y="16" rx="1"/><path d="M12 8v4M12 12H5v4M12 12h7v4"/>',
+    workflow: '<rect width="6" height="5" x="2" y="3" rx="1"/><rect width="6" height="5" x="16" y="16" rx="1"/><rect width="6" height="5" x="2" y="16" rx="1"/><path d="M8 5.5h5a3 3 0 0 1 3 3V16M8 18.5h5"/>',
+    component: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 14h7v7h-7z"/>',
+    brackets: '<path d="M8 4H5v16h3M16 4h3v16h-3M10 8l4 8M14 8l-4 8"/>',
+    binary: '<path d="M7 5H5v5h2a2 2 0 1 1-2 2M17 5h-2l2 7h-3M16 5h2v14M5 19h14"/>',
+    cpu: '<rect width="12" height="12" x="6" y="6" rx="2"/><path d="M9 9h6v6H9zM9 1v5M15 1v5M9 18v5M15 18v5M1 9h5M1 15h5M18 9h5M18 15h5"/>',
+    wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18a2 2 0 1 0 2.8 2.8l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.7 2.7-2.8-.9-.9-2.8Z"/>',
+    "tool-case": '<rect width="18" height="14" x="3" y="7" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18M10 12v3h4v-3"/>',
+    monitor: '<rect width="18" height="13" x="3" y="3" rx="2"/><path d="M8 21h8M12 16v5"/>',
+    smartphone: '<rect width="12" height="20" x="6" y="2" rx="2"/><path d="M10 18h4M11 5h2"/>',
+    map: '<path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3Z"/><path d="M9 3v15M15 6v15"/>',
+    megaphone: '<path d="m3 11 16-6v14L3 13v-2ZM3 13l2 7h4l-2-6M19 9a3 3 0 0 1 0 6"/>',
+    pin: '<path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/>',
+    history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8.5M3 3v5.5h5.5M12 7v5l3 2"/>',
+    "circle-help": '<circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 4.3 1.7c-1 .9-1.9 1.3-1.9 3M12 17h.01"/>',
+    "bookmark-check": '<path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/><path d="m8 11 2 2 4-4"/>',
+    "book-marked": '<path d="M2 4.5A2.5 2.5 0 0 1 4.5 2H11v18H4.5A2.5 2.5 0 0 0 2 22Z"/><path d="M22 4.5A2.5 2.5 0 0 0 19.5 2H13v18h6.5a2.5 2.5 0 0 1 2.5 2ZM16 5l1.5 1L19 5v4l-1.5-1L16 9Z"/>',
+    newspaper: '<path d="M4 4h15a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1Z"/><path d="M7 8h9M7 12h9M7 16h5M16 16h1"/>',
+    "scroll-text": '<path d="M8 4h11v16H7a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2h2v14"/><path d="M11 8h5M11 12h5M11 16h3"/>',
+    "notebook-tabs": '<path d="M5 3h13a2 2 0 0 1 2 2v16H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z"/><path d="M7 7h8M7 11h8M7 15h5M17 3v5h3"/>',
+    text: '<path d="M4 5h16M12 5v15M8 20h8M7 9h10M7 13h10"/>',
+    "graduation-cap": '<path d="m2 10 10-5 10 5-10 5L2 10Z"/><path d="M6 12v5c3 2 9 2 12 0v-5M22 10v6"/>',
+    palette: '<circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="9" r="1"/><path d="M17 16c0 1.1-.9 2-2 2h-1a2 2 0 0 1-2-2 2 2 0 0 0-2-2H8"/>',
+    sparkles: '<path d="m12 3 1.2 4.8L18 9l-4.8 1.2L12 15l-1.2-4.8L6 9l4.8-1.2L12 3ZM19 15l.6 2.4L22 18l-2.4.6L19 21l-.6-2.4L16 18l2.4-.6L19 15Z"/>',
+    flag: '<path d="M5 21V4M5 4c4-3 7 3 14 0v10c-7 3-10-3-14 0"/>',
     "sliders-horizontal": '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
     filter: '<path d="M22 3H2l8 9.46V19l4 2v-8.54Z"/>',
     search: '<circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4.5 4.5"/>',
@@ -89,9 +132,17 @@
     return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
   }
 
-  function iconSvg(name, className) {
+  function iconSvg(name, className, colors) {
     const path = ICON_PATHS[name] || ICON_PATHS["file-text"];
-    return `<svg class="${className || "nav-icon"}" viewBox="0 0 24 24" aria-hidden="true">${path}</svg>`;
+    const palette = Array.isArray(colors) ? colors.filter((color) => typeof color === "string" && color.trim()) : [];
+    const gradientId = palette.length > 1 ? `icon-gradient-${iconGradientSequence++}` : "";
+    const gradient = gradientId
+      ? `<defs><linearGradient id="${gradientId}" x1="0%" y1="0%" x2="100%" y2="100%">${palette.map((color, index) => `<stop offset="${Math.round((index / (palette.length - 1)) * 100)}%" stop-color="${escapeHtml(color)}" />`).join("")}</linearGradient></defs>`
+      : "";
+    const gradientAttribute = gradientId ? ` data-icon-gradient="${gradientId}"` : "";
+    // 将渐变直接写入图形组，避免仅设置外层 SVG 后被继承规则覆盖。
+    const iconContent = gradientId ? `<g style="stroke:url(#${gradientId})">${path}</g>` : path;
+    return `<svg class="${className || "nav-icon"}" viewBox="0 0 24 24" aria-hidden="true"${gradientAttribute}>${gradient}${iconContent}</svg>`;
   }
 
   function docUrl(relativePath) {
@@ -131,14 +182,141 @@
     return { name: value, accent: "" };
   }
 
+  function imageConfig(value) {
+    if (value && typeof value === "object") return { source: String(value.src || value.url || ""), alt: String(value.alt || "") };
+    return { source: String(value || ""), alt: "" };
+  }
+
+  function mediaUrl(value) {
+    const source = imageConfig(value).source.trim();
+    if (!source) return "";
+    if (/^(https?:|data:|blob:|\/\/|\/)/i.test(source)) return source;
+    return `/api/asset?path=${encodeURIComponent(source)}`;
+  }
+
+  function setMeta(attribute, name, value) {
+    let element = Array.from(document.head.querySelectorAll("meta")).find((item) => item.getAttribute(attribute) === name);
+    if (!element) {
+      element = document.createElement("meta");
+      element.setAttribute(attribute, name);
+      document.head.appendChild(element);
+    }
+    element.setAttribute("content", String(value || ""));
+  }
+
+  function renderFavicon(site) {
+    const favicon = $("#site-favicon");
+    if (!favicon) return;
+    const configured = imageConfig(site.favicon || site.ico);
+    const source = mediaUrl(configured.source);
+    if (source) favicon.setAttribute("href", source);
+    else favicon.removeAttribute("href");
+    if (configured.source) favicon.setAttribute("type", configured.source.toLowerCase().endsWith(".ico") ? "image/x-icon" : "image/png");
+  }
+
+  function renderSeo(documentData) {
+    const site = state.config.site || {};
+    const seo = site.seo && typeof site.seo === "object" ? site.seo : {};
+    const brand = brandParts(site.brand);
+    const siteTitle = String(seo.title || site.title || `${brand.name}${brand.accent}` || "文档站点");
+    const pageTitle = documentData ? `${documentData.title} - ${siteTitle}` : siteTitle;
+    const description = documentData?.description || seo.description || site.description || "Markdown 文档站点";
+    const keywords = Array.isArray(seo.keywords) ? seo.keywords.join(", ") : seo.keywords || "";
+    const image = mediaUrl(seo.image || seo.ogImage || site.logo);
+    document.title = pageTitle;
+    setMeta("name", "description", description);
+    setMeta("name", "keywords", keywords);
+    setMeta("name", "author", seo.author || "");
+    setMeta("name", "robots", seo.robots || "index,follow");
+    if (seo.themeColor) setMeta("name", "theme-color", seo.themeColor);
+    setMeta("property", "og:title", pageTitle);
+    setMeta("property", "og:description", description);
+    setMeta("property", "og:type", documentData ? "article" : "website");
+    setMeta("property", "og:url", window.location.href);
+    setMeta("property", "og:image", image);
+    setMeta("name", "twitter:card", image ? "summary_large_image" : "summary");
+    setMeta("name", "twitter:title", pageTitle);
+    setMeta("name", "twitter:description", description);
+    setMeta("name", "twitter:image", image);
+    let canonical = document.head.querySelector("link[rel=\"canonical\"]");
+    if (!canonical) {
+      canonical = document.createElement("link");
+      canonical.rel = "canonical";
+      document.head.appendChild(canonical);
+    }
+    canonical.href = seo.canonical || window.location.href;
+  }
+
+  function appendFooterItem(container, value, fallbackLabel) {
+    const item = value && typeof value === "object" ? value : { label: value };
+    const label = String(item.label || item.text || fallbackLabel || "").trim();
+    if (!label) return false;
+    const element = item.href ? document.createElement("a") : document.createElement("span");
+    element.textContent = label;
+    if (item.href) {
+      element.href = item.href;
+      if (item.external || /^https?:\/\//i.test(item.href)) { element.target = "_blank"; element.rel = "noreferrer"; }
+    }
+    container.appendChild(element);
+    return true;
+  }
+
+  function renderSiteFooter() {
+    const footer = $("#doc-footer");
+    const site = state.config.site || {};
+    const configured = site.footer && typeof site.footer === "object" ? site.footer : {};
+    const footerConfig = {
+      ...configured,
+      copyright: configured.copyright || site.copyright,
+      icp: configured.icp || site.icp,
+      beian: configured.beian || site.beian
+    };
+    footer.innerHTML = "";
+    footer.hidden = true;
+    const values = [
+      { value: footerConfig.copyright, label: "" },
+      { value: footerConfig.icp, label: "" },
+      { value: footerConfig.beian, label: "" },
+      ...(Array.isArray(footerConfig.links) ? footerConfig.links.map((value) => ({ value, label: "" })) : [])
+    ];
+    values.forEach(({ value, label }) => {
+      if (!appendFooterItem(footer, value, label)) return;
+      const items = Array.from(footer.children);
+      if (items.length > 1) {
+        const separator = document.createElement("span");
+        separator.className = "footer-separator";
+        separator.setAttribute("aria-hidden", "true");
+        footer.insertBefore(separator, items[items.length - 1]);
+      }
+    });
+    footer.hidden = footer.children.length === 0;
+  }
+
   function renderBrand() {
     const site = state.config.site || {};
     const brand = brandParts(site.brand);
     const brandName = $(".brand-name");
+    const brandMark = $(".brand-mark");
+    const brandLogo = $("#brand-logo");
     brandName.innerHTML = `${escapeHtml(brand.name)}${brand.accent ? `<span>${escapeHtml(brand.accent)}</span>` : ""}`;
     $("#brand-context").textContent = site.context || "文档";
-    document.title = site.title ? `${site.title} - ${brand.name}${brand.accent}` : `${brand.name}${brand.accent}`;
-    document.querySelector('meta[name="description"]').setAttribute("content", site.description || "Markdown 文档站点");
+    const logo = imageConfig(site.logo);
+    brandLogo.innerHTML = "";
+    if (logo.source) {
+      const image = document.createElement("img");
+      image.src = mediaUrl(logo.source);
+      image.alt = logo.alt || site.title || brand.name;
+      brandLogo.appendChild(image);
+      brandLogo.hidden = false;
+      brandMark.hidden = true;
+      brandName.hidden = true;
+    } else {
+      brandLogo.hidden = true;
+      brandMark.hidden = false;
+      brandName.hidden = false;
+    }
+    renderFavicon(site);
+    renderSeo();
   }
 
   function appendTopbarLink(container, link) {
@@ -191,13 +369,75 @@
     }
   }
 
+  function sidebarConfig() {
+    return state.config.sidebar && typeof state.config.sidebar === "object" ? state.config.sidebar : {};
+  }
+
+  function applyNodeIconColor(element, node) {
+    if (node.iconColor) element.style.setProperty("--nav-icon-color", node.iconColor);
+  }
+
+  function applyNavDepth(element, depth) {
+    const configuredIndent = Number(sidebarConfig().indent);
+    const indent = Number.isFinite(configuredIndent) ? Math.max(0, configuredIndent) : DEFAULT_NAV_INDENT;
+    element.style.setProperty("--nav-depth", depth);
+    element.style.setProperty("--nav-offset", `${depth * indent}px`);
+  }
+
+  // 目录状态变化后递归刷新父级高度，保证深层菜单始终完整可见。
+  function refreshNavHeight(group) {
+    const children = group.querySelector(":scope > .side-nav__children");
+    if (!children) return;
+    const heading = group.querySelector(":scope > .side-nav__heading");
+    const expanded = heading?.getAttribute("aria-expanded") === "true";
+    children.style.maxHeight = expanded ? children.scrollHeight + "px" : "0px";
+    const parentGroup = group.parentElement?.closest(".side-nav__group");
+    if (parentGroup) refreshNavHeight(parentGroup);
+  }
+
+  function setGroupExpanded(group, expanded) {
+    const heading = group.querySelector(":scope > .side-nav__heading");
+    const children = group.querySelector(":scope > .side-nav__children");
+    if (!heading || !children) return;
+    heading.setAttribute("aria-expanded", String(expanded));
+    children.classList.toggle("is-collapsed", !expanded);
+    refreshNavHeight(group);
+  }
+
+  function collapseSiblingGroups(group) {
+    const parent = group.parentElement;
+    if (!parent) return;
+    parent.querySelectorAll(":scope > .side-nav__group").forEach((sibling) => {
+      if (sibling !== group) setGroupExpanded(sibling, false);
+    });
+  }
+
+  // 手风琴模式只折叠同一层级的兄弟目录，保留当前文档的父级路径。
+  function applyNavExpansionMode() {
+    const nav = $("#sidebar-nav");
+    const groups = Array.from(nav.querySelectorAll(".side-nav__group"));
+    if (sidebarConfig().expandMode !== "accordion") {
+      groups.forEach((group) => setGroupExpanded(group, true));
+      return;
+    }
+    groups.forEach((group) => setGroupExpanded(group, false));
+    const activePath = state.currentPath || state.defaultPath || "";
+    const matched = groups.filter((group) => activePath === group.dataset.groupPath || activePath.startsWith(`${group.dataset.groupPath}/`));
+    if (matched.length) matched.forEach((group) => { collapseSiblingGroups(group); setGroupExpanded(group, true); });
+    else {
+      const firstGroup = nav.querySelector(":scope > .side-nav__group");
+      if (firstGroup) setGroupExpanded(firstGroup, true);
+    }
+  }
+
   function createSideLink(node, depth) {
     const link = document.createElement("a");
     link.className = "side-nav__link";
     link.href = docUrl(node.path);
     link.dataset.docPath = node.path;
-    link.style.setProperty("--nav-depth", depth);
-    link.innerHTML = iconSvg(node.icon, "side-nav__icon");
+    applyNavDepth(link, depth);
+    applyNodeIconColor(link, node);
+    link.innerHTML = iconSvg(node.icon, "side-nav__icon", node.iconColors);
     const label = document.createElement("span");
     label.className = "side-nav__label";
     label.textContent = node.title;
@@ -213,8 +453,9 @@
     heading.className = "side-nav__heading";
     heading.type = "button";
     heading.setAttribute("aria-expanded", "true");
-    heading.style.setProperty("--nav-depth", depth);
-    heading.innerHTML = `<span class="side-nav__heading-label">${iconSvg(node.icon, "side-nav__icon")}</span>`;
+    applyNavDepth(heading, depth);
+    applyNodeIconColor(heading, node);
+    heading.innerHTML = `<span class="side-nav__heading-label">${iconSvg(node.icon, "side-nav__icon", node.iconColors)}</span>`;
     heading.querySelector(".side-nav__heading-label").appendChild(document.createTextNode(node.title));
     heading.insertAdjacentHTML("beforeend", iconSvg("chevron-down", "side-nav__chevron"));
     const children = document.createElement("div");
@@ -239,6 +480,9 @@
     } else {
       renderSideNodes(state.tree, nav, 0);
     }
+    const indent = Number(sidebarConfig().indent);
+    nav.style.setProperty("--nav-indent", `${Number.isFinite(indent) ? Math.max(0, indent) : DEFAULT_NAV_INDENT}px`);
+    applyNavExpansionMode();
     $("#sidebar-footer").innerHTML = "";
   }
 
@@ -308,14 +552,26 @@
 
   function setActiveNav(pathValue) {
     document.querySelectorAll(".side-nav__link[data-doc-path]").forEach((link) => link.classList.toggle("is-active", link.dataset.docPath === pathValue));
+    const accordion = sidebarConfig().expandMode === "accordion";
     document.querySelectorAll(".side-nav__group[data-group-path]").forEach((group) => {
       const matches = pathValue === group.dataset.groupPath || pathValue.startsWith(`${group.dataset.groupPath}/`);
       const children = group.querySelector(":scope > .side-nav__children");
       const heading = group.querySelector(":scope > .side-nav__heading");
       if (matches && children && heading) {
-        children.classList.remove("is-collapsed");
-        heading.setAttribute("aria-expanded", "true");
+        if (accordion) collapseSiblingGroups(group);
+        setGroupExpanded(group, true);
       }
+    });
+  }
+
+  // 文档中的图标标记复用导航图标注册表，避免维护第二份 SVG 路径。
+  function renderMarkdownIcons(container) {
+    const config = sidebarConfig();
+    const colors = config.iconColor ? [config.iconColor] : config.iconPalette;
+    container.querySelectorAll("[data-icon-name]").forEach((element) => {
+      const name = element.dataset.iconName || "file-text";
+      element.innerHTML = iconSvg(name, "markdown-icon__svg", colors);
+      element.title = name;
     });
   }
 
@@ -326,10 +582,11 @@
     const hasH1 = (documentData.headings || []).some((heading) => heading.level === 1);
     const article = $("#doc-content");
     article.innerHTML = `<section class="doc-section markdown-section" id="doc-page" data-title="${escapeHtml(documentData.title)}"><div class="section-kicker"><span class="kicker-line"></span>${escapeHtml(category)}</div>${hasH1 ? "" : `<h1 class="doc-title">${escapeHtml(documentData.title)}</h1>${documentData.description ? `<p class="lead doc-description">${escapeHtml(documentData.description)}</p>` : ""}`}<div class="doc-meta"><span>${escapeHtml(documentData.path)}</span><span>·</span><span>更新于 ${new Date(documentData.updatedAt).toLocaleDateString("zh-CN")}</span></div><div class="markdown-body">${documentData.html}</div></section>`;
+    renderMarkdownIcons(article);
     renderToc(documentData.headings);
     setActiveNav(documentData.path);
     observeHeadings();
-    document.title = `${documentData.title} - ${brandParts((state.config.site || {}).brand).name}`;
+    renderSeo(documentData);
     if (window.location.hash) window.requestAnimationFrame(() => scrollToHash(window.location.hash, "instant"));
     else window.scrollTo({ top: 0, behavior: "instant" });
   }
@@ -382,7 +639,8 @@
       item.className = `search-result${index === state.selectedSearchIndex ? " is-selected" : ""}`;
       item.href = docUrl(result.path);
       item.dataset.docPath = result.path;
-      item.innerHTML = iconSvg(result.icon, "search-result__icon");
+      if (result.iconColor) item.style.setProperty("--nav-icon-color", result.iconColor);
+      item.innerHTML = iconSvg(result.icon, "search-result__icon", result.iconColors);
       const copy = document.createElement("span");
       copy.className = "search-result__copy";
       const title = document.createElement("strong");
@@ -445,9 +703,11 @@
     const groupHeading = event.target.closest(".side-nav__heading");
     if (groupHeading) {
       const expanded = groupHeading.getAttribute("aria-expanded") === "true";
-      groupHeading.setAttribute("aria-expanded", String(!expanded));
-      const children = groupHeading.parentElement.querySelector(":scope > .side-nav__children");
-      if (children) children.classList.toggle("is-collapsed", expanded);
+      const group = groupHeading.closest(".side-nav__group");
+      if (group) {
+        if (!expanded && sidebarConfig().expandMode === "accordion") collapseSiblingGroups(group);
+        setGroupExpanded(group, !expanded);
+      }
     }
 
     const tocLink = event.target.closest(".toc__link");
@@ -517,6 +777,7 @@
       renderBrand();
       renderTopbar();
       renderSidebar();
+      renderSiteFooter();
       const requestedPath = new URLSearchParams(window.location.search).get("doc") || state.defaultPath;
       if (requestedPath) await loadDocument(requestedPath, false);
       else renderEmptyDocument("把 .md 文件放入配置的文档目录，然后刷新页面。");
