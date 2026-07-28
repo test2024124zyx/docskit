@@ -10,6 +10,7 @@
 - [站点品牌、资源和 SEO](#站点品牌资源和-seo)
 - [页脚](#页脚)
 - [顶部导航](#顶部导航)
+- [Markdown 代码块](#markdown-代码块)
 - [侧边栏排序](#侧边栏排序)
 - [侧边栏图标](#侧边栏图标)
 - [图标策略](#图标策略)
@@ -68,6 +69,14 @@
       { "label": "项目仓库", "href": "https://github.com/example/project", "icon": "github", "external": true }
     ]
   },
+  "markdown": {
+    "code": {
+      "highlight": true,
+      "lineNumbers": true,
+      "copy": true,
+      "wrap": false
+    }
+  },
   "sidebar": {
     "sort": "createdAt",
     "iconStrategy": "modern",
@@ -98,6 +107,7 @@
 | `docsDir` | string | `"docs"` | 文档目录，相对于项目根目录。 |
 | `site` | object | 见下文 | 品牌、资源、SEO 和页脚。 |
 | `topbar` | object | `{}` | 顶部版本、链接、搜索和主题开关。 |
+| `markdown` | object | 见下文 | Markdown 代码块显示选项。 |
 | `sidebar` | object | 见下文 | 排序、图标、缩进和展开模式。 |
 
 未列出的顶层字段不会改变 DocsKit 的站点配置。缺失字段使用默认值；数组字段应直接写数组，不要写成逗号分隔字符串。
@@ -225,6 +235,34 @@ SEO 图片为空时会退回 `site.logo`。文档页的摘要优先级为 `front
       { "label": "开始使用", "path": "getting-started/installation.md", "icon": "rocket" },
       { "label": "GitHub", "href": "https://github.com/example/project", "icon": "github", "external": true }
     ]
+  }
+}
+```
+
+## Markdown 代码块
+
+普通 fenced code block 默认启用服务端语法高亮、行号和复制按钮。可以通过 `markdown.code` 控制普通代码块的显示方式：
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `markdown.code.highlight` | boolean | `true` | 是否启用服务端语法高亮；未知语言或高亮失败时回退为转义纯文本。 |
+| `markdown.code.lineNumbers` | boolean | `true` | 是否显示由站点统一生成的行号；不会修改代码正文。 |
+| `markdown.code.copy` | boolean | `true` | 是否显示复制按钮，复制内容保持代码原文。 |
+| `markdown.code.wrap` | boolean | `false` | 是否让长代码自动换行；关闭时保留横向滚动。 |
+
+四个字段只接受布尔值，其他类型会恢复默认值。代码围栏中的语言名称决定高亮语言；未知语言仍会安全显示为纯文本。配置作用于普通代码块，`math`、`latex`、`tex` 和 `mermaid` 使用专用渲染方式。
+
+例如，以下配置关闭高亮和行号，保留复制按钮，并让长代码自动换行：
+
+```json
+{
+  "markdown": {
+    "code": {
+      "highlight": false,
+      "lineNumbers": false,
+      "copy": true,
+      "wrap": true
+    }
   }
 }
 ```

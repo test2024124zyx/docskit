@@ -3,6 +3,7 @@
   const body = document.body;
   const state = {
     config: null,
+    staticBuild: null,
     tree: [],
     documents: [],
     currentPath: "",
@@ -10,7 +11,16 @@
     searchResults: [],
     selectedSearchIndex: 0,
     searchTimer: null,
-    headingObserver: null
+    headingObserver: null,
+    tocScrollTarget: "",
+    tocScrollRequestId: 0,
+    mermaidPromise: null,
+    staticSearchPromise: null,
+    documentRequestId: 0,
+    documentAbortController: null,
+    searchRequestId: 0,
+    searchAbortController: null,
+    searchPreviousFocus: null
   };
   let iconGradientSequence = 0;
 
@@ -145,8 +155,40 @@
     return `<svg class="${className || "nav-icon"}" viewBox="0 0 24 24" aria-hidden="true"${gradientAttribute}>${gradient}${iconContent}</svg>`;
   }
 
-  function docUrl(relativePath) {
-    return `/?doc=${encodeURIComponent(relativePath)}`;
+  function encodeStaticPath(value) {
+    return String(value || "").replace(/\\/g, "/").split("/").filter(Boolean).map((segment) => encodeURIComponent(segment)).join("/");
+  }
+
+  function staticBuildData() {
+    // 静态页面把导航、当前文档和路由表内嵌到 HTML，浏览器无需请求动态启动接口。
+    return state.staticBuild && typeof state.staticBuild === "object" ? state.staticBuild : null;
+  }
+
+  function staticUrl(relativePath) {
+    const build = staticBuildData();
+    const rawBase = String(build?.base || "/").trim();
+    const base = rawBase === "/" ? "/" : `/${rawBase.replace(/^\/+|\/+$/g, "")}/`;
+    const encodedPath = encodeStaticPath(relativePath);
+    return `${base}${encodedPath}`;
+  }
+
+  function staticDocumentDataUrl(relativePath) {
+    return staticUrl(`data/documents/${relativePath}.json`);
+  }
+
+  function staticDocumentPathFromLocation() {
+    const build = staticBuildData();
+    if (!build || !build.routeDocuments || typeof build.routeDocuments !== "object") return "";
+    return String(build.routeDocuments[window.location.pathname] || "");
+  }
+
+  function docUrl(relativePath, hashValue) {
+    const hash = String(hashValue || "");
+    const build = staticBuildData();
+    const staticPath = build?.documentUrls?.[relativePath];
+    const target = staticPath || staticUrl(`${String(relativePath || "").replace(/\.(?:md|markdown)$/i, "")}.html`);
+    const suffix = hash ? (hash.startsWith("#") ? hash : `#${hash}`) : "";
+    return build ? `${target}${suffix}` : `/?doc=${encodeURIComponent(relativePath)}${suffix}`;
   }
 
   function setTheme(theme) {
@@ -169,8 +211,8 @@
     window.setTimeout(() => toast.remove(), 2800);
   }
 
-  async function requestJson(endpoint) {
-    const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+  async function requestJson(endpoint, options = {}) {
+    const response = await fetch(endpoint, { headers: { Accept: "application/json" }, ...options });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
     return payload;
@@ -191,6 +233,7 @@
     const source = imageConfig(value).source.trim();
     if (!source) return "";
     if (/^(https?:|data:|blob:|\/\/|\/)/i.test(source)) return source;
+    if (staticBuildData()) return staticUrl(`assets/${source}`);
     return `/api/asset?path=${encodeURIComponent(source)}`;
   }
 
@@ -212,6 +255,7 @@
     if (source) favicon.setAttribute("href", source);
     else favicon.removeAttribute("href");
     if (configured.source) favicon.setAttribute("type", configured.source.toLowerCase().endsWith(".ico") ? "image/x-icon" : "image/png");
+    else favicon.removeAttribute("type");
   }
 
   function renderSeo(documentData) {
@@ -228,7 +272,7 @@
     setMeta("name", "keywords", keywords);
     setMeta("name", "author", seo.author || "");
     setMeta("name", "robots", seo.robots || "index,follow");
-    if (seo.themeColor) setMeta("name", "theme-color", seo.themeColor);
+    setMeta("name", "theme-color", seo.themeColor || "");
     setMeta("property", "og:title", pageTitle);
     setMeta("property", "og:description", description);
     setMeta("property", "og:type", documentData ? "article" : "website");
@@ -298,6 +342,7 @@
     const brandName = $(".brand-name");
     const brandMark = $(".brand-mark");
     const brandLogo = $("#brand-logo");
+    $(".brand").href = staticBuildData() ? staticUrl("") : "/";
     brandName.innerHTML = `${escapeHtml(brand.name)}${brand.accent ? `<span>${escapeHtml(brand.accent)}</span>` : ""}`;
     $("#brand-context").textContent = site.context || "文档";
     const logo = imageConfig(site.logo);
@@ -320,16 +365,18 @@
   }
 
   function appendTopbarLink(container, link) {
+    if (!link || typeof link !== "object") return;
     const anchor = document.createElement("a");
     anchor.className = "topbar-link topbar-link--configured";
-    anchor.textContent = link.label || "链接";
+    anchor.textContent = String(link.label || "链接");
     const configuredPath = link.path || link.doc;
     if (configuredPath) {
       anchor.href = docUrl(configuredPath);
       anchor.dataset.docPath = configuredPath;
     } else {
-      anchor.href = link.href || "#";
-      if (link.external || /^https?:\/\//i.test(anchor.href)) { anchor.target = "_blank"; anchor.rel = "noreferrer"; }
+      const configuredHref = link.href || "#";
+      anchor.href = configuredHref;
+      if (link.external || /^https?:\/\//i.test(configuredHref)) { anchor.target = "_blank"; anchor.rel = "noreferrer"; }
     }
     if (link.icon) anchor.insertAdjacentHTML("afterbegin", iconSvg(link.icon, "topbar-link__icon"));
     container.appendChild(anchor);
@@ -348,7 +395,7 @@
       version.innerHTML = `<span>${escapeHtml(topbar.version)}</span>${iconSvg("chevron-down", "version-select__icon")}`;
       actions.appendChild(version);
     }
-    (Array.isArray(topbar.links) ? topbar.links : []).forEach((link) => appendTopbarLink(actions, link));
+    (Array.isArray(topbar.links) ? topbar.links : []).filter((link) => link && typeof link === "object").forEach((link) => appendTopbarLink(actions, link));
     if (topbar.themeToggle !== false) {
       const theme = document.createElement("button");
       theme.className = "theme-button icon-button";
@@ -375,6 +422,7 @@
 
   function applyNodeIconColor(element, node) {
     if (node.iconColor) element.style.setProperty("--nav-icon-color", node.iconColor);
+    else element.style.removeProperty("--nav-icon-color");
   }
 
   function applyNavDepth(element, depth) {
@@ -490,7 +538,7 @@
     const breadcrumb = $("#breadcrumb");
     breadcrumb.innerHTML = "";
     const home = document.createElement("a");
-    home.href = "/";
+    home.href = staticBuildData() ? staticUrl("") : "/";
     home.textContent = "文档";
     breadcrumb.appendChild(home);
     const parts = documentData.path.split("/");
@@ -508,6 +556,8 @@
 
   function renderToc(headings) {
     const list = $("#toc-list");
+    state.tocScrollTarget = "";
+    state.tocScrollRequestId += 1;
     list.innerHTML = "";
     const visibleHeadings = (headings || []).filter((heading) => heading.level >= 2 && heading.level <= 4);
     if (!visibleHeadings.length) {
@@ -521,7 +571,30 @@
       link.dataset.headingId = heading.id;
       link.style.setProperty("--toc-level", Math.max(0, heading.level - 2));
       link.textContent = heading.title;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        navigateToHeading(heading.id, link.getAttribute("href"));
+      });
       list.appendChild(link);
+    });
+  }
+
+  function setActiveToc(headingId) {
+    document.querySelectorAll(".toc__link").forEach((link) => link.classList.toggle("is-active", link.dataset.headingId === headingId));
+  }
+
+  function navigateToHeading(headingId, href) {
+    const target = document.getElementById(headingId);
+    if (!target) return;
+    state.tocScrollTarget = headingId;
+    state.tocScrollRequestId += 1;
+    const requestId = state.tocScrollRequestId;
+    setActiveToc(headingId);
+    window.history.pushState({}, "", href || `#${encodeURIComponent(headingId)}`);
+    window.requestAnimationFrame(() => {
+      if (requestId !== state.tocScrollRequestId) return;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }
 
@@ -531,9 +604,16 @@
     const headings = Array.from($("#doc-content").querySelectorAll("h2[id], h3[id], h4[id]"));
     if (!headings.length) return;
     state.headingObserver = new IntersectionObserver((entries) => {
+      const requested = entries.find((entry) => entry.isIntersecting && entry.target.id === state.tocScrollTarget);
+      if (requested) {
+        state.tocScrollTarget = "";
+        setActiveToc(requested.target.id);
+        return;
+      }
+      if (state.tocScrollTarget) return;
       const current = entries.filter((entry) => entry.isIntersecting).sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
       if (!current) return;
-      links.forEach((link) => link.classList.toggle("is-active", link.dataset.headingId === current.target.id));
+      setActiveToc(current.target.id);
     }, { rootMargin: "-96px 0px -62% 0px", threshold: [0, .2, .5, .9] });
     headings.forEach((heading) => state.headingObserver.observe(heading));
   }
@@ -551,7 +631,12 @@
   }
 
   function setActiveNav(pathValue) {
-    document.querySelectorAll(".side-nav__link[data-doc-path]").forEach((link) => link.classList.toggle("is-active", link.dataset.docPath === pathValue));
+    document.querySelectorAll(".side-nav__link[data-doc-path]").forEach((link) => {
+      const active = link.dataset.docPath === pathValue;
+      link.classList.toggle("is-active", active);
+      if (active) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
     const accordion = sidebarConfig().expandMode === "accordion";
     document.querySelectorAll(".side-nav__group[data-group-path]").forEach((group) => {
       const matches = pathValue === group.dataset.groupPath || pathValue.startsWith(`${group.dataset.groupPath}/`);
@@ -575,6 +660,36 @@
     });
   }
 
+  function loadMermaid() {
+    if (window.mermaid) return Promise.resolve(window.mermaid);
+    if (state.mermaidPromise) return state.mermaidPromise;
+    state.mermaidPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = staticBuildData() ? staticUrl("vendor/mermaid.min.js") : "/vendor/mermaid.min.js";
+      script.onload = () => window.mermaid ? resolve(window.mermaid) : reject(new Error("Mermaid 加载失败"));
+      script.onerror = () => reject(new Error("Mermaid 加载失败"));
+      document.head.appendChild(script);
+    }).catch((error) => {
+      state.mermaidPromise = null;
+      throw error;
+    });
+    return state.mermaidPromise;
+  }
+
+  function renderMermaid(container) {
+    const sourceNodes = Array.from(container.querySelectorAll("[data-mermaid-source]"));
+    if (!sourceNodes.length) return;
+    loadMermaid().then((mermaid) => {
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true });
+      sourceNodes.forEach((node) => node.classList.add("mermaid"));
+      return mermaid.run({ nodes: sourceNodes });
+    }).then(() => {
+      sourceNodes.forEach((node) => node.closest(".markdown-diagram")?.classList.add("is-rendered"));
+    }).catch(() => {
+      sourceNodes.forEach((node) => node.closest(".markdown-diagram")?.classList.add("is-render-error"));
+    });
+  }
+
   function renderDocument(documentData) {
     state.currentDocument = documentData;
     renderBreadcrumb(documentData);
@@ -583,6 +698,7 @@
     const article = $("#doc-content");
     article.innerHTML = `<section class="doc-section markdown-section" id="doc-page" data-title="${escapeHtml(documentData.title)}"><div class="section-kicker"><span class="kicker-line"></span>${escapeHtml(category)}</div>${hasH1 ? "" : `<h1 class="doc-title">${escapeHtml(documentData.title)}</h1>${documentData.description ? `<p class="lead doc-description">${escapeHtml(documentData.description)}</p>` : ""}`}<div class="doc-meta"><span>${escapeHtml(documentData.path)}</span><span>·</span><span>更新于 ${new Date(documentData.updatedAt).toLocaleDateString("zh-CN")}</span></div><div class="markdown-body">${documentData.html}</div></section>`;
     renderMarkdownIcons(article);
+    renderMermaid(article);
     renderToc(documentData.headings);
     setActiveNav(documentData.path);
     observeHeadings();
@@ -592,26 +708,56 @@
   }
 
   function renderEmptyDocument(message) {
+    state.currentDocument = null;
+    state.currentPath = "";
     $("#doc-content").innerHTML = `<section class="doc-section empty-document"><div class="empty-document__icon">${iconSvg("file-text", "empty-document__icon-svg")}</div><h1>还没有 Markdown 文档</h1><p>${escapeHtml(message)}</p><code>docs/your-file.md</code></section>`;
     $("#toc-list").innerHTML = '<span class="toc-empty">暂无目录</span>';
+    if (state.config) renderSeo();
   }
 
-  async function loadDocument(pathValue, pushState) {
-    if (!pathValue) { renderEmptyDocument("把 .md 文件放入配置的文档目录，然后刷新页面。"); return; }
+  function createAbortController() {
+    return typeof window.AbortController === "function" ? new window.AbortController() : null;
+  }
+
+  async function loadDocument(pathValue, pushState, hashValue) {
+    const requestId = ++state.documentRequestId;
+    if (state.documentAbortController) state.documentAbortController.abort();
+    const controller = createAbortController();
+    state.documentAbortController = controller;
+    if (!pathValue) {
+      renderEmptyDocument("把 .md 文件放入配置的文档目录，然后刷新页面。");
+      state.documentAbortController = null;
+      return;
+    }
     $("#doc-content").innerHTML = '<div class="loading-state"><span class="loading-spinner"></span>正在加载文档...</div>';
     try {
-      const documentData = await requestJson(`/api/document?path=${encodeURIComponent(pathValue)}`);
+      const endpoint = staticBuildData()
+        ? staticDocumentDataUrl(pathValue)
+        : `/api/document?path=${encodeURIComponent(pathValue)}`;
+      const documentData = await requestJson(endpoint, controller ? { signal: controller.signal } : {});
+      if (requestId !== state.documentRequestId) return;
       state.currentPath = documentData.path;
-      if (pushState) window.history.pushState({}, "", docUrl(documentData.path));
+      if (pushState) window.history.pushState({}, "", docUrl(documentData.path, hashValue));
       renderDocument(documentData);
       if (window.innerWidth <= 680) toggleSidebar(false);
     } catch (error) {
+      if (requestId !== state.documentRequestId) return;
+      if (error.name === "AbortError") {
+        if (state.currentDocument) renderDocument(state.currentDocument);
+        else renderEmptyDocument("文档加载已取消");
+        return;
+      }
       renderEmptyDocument(error.message || "文档加载失败");
       showToast(error.message || "文档加载失败", "error");
+    } finally {
+      if (state.documentAbortController === controller) state.documentAbortController = null;
     }
   }
 
   function openSearch() {
+    if (state.searchAbortController) state.searchAbortController.abort();
+    state.searchRequestId += 1;
+    state.searchPreviousFocus = document.activeElement;
     searchModal.classList.add("is-open");
     searchModal.setAttribute("aria-hidden", "false");
     body.classList.add("is-modal-open");
@@ -623,9 +769,17 @@
   }
 
   function closeSearch() {
+    window.clearTimeout(state.searchTimer);
+    state.searchTimer = null;
+    state.searchRequestId += 1;
+    if (state.searchAbortController) state.searchAbortController.abort();
+    state.searchAbortController = null;
     searchModal.classList.remove("is-open");
     searchModal.setAttribute("aria-hidden", "true");
     body.classList.remove("is-modal-open");
+    const previousFocus = state.searchPreviousFocus;
+    state.searchPreviousFocus = null;
+    if (previousFocus && typeof previousFocus.focus === "function" && document.contains(previousFocus)) previousFocus.focus();
   }
 
   function renderSearchResults(results) {
@@ -637,6 +791,8 @@
     results.forEach((result, index) => {
       const item = document.createElement("a");
       item.className = `search-result${index === state.selectedSearchIndex ? " is-selected" : ""}`;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(index === state.selectedSearchIndex));
       item.href = docUrl(result.path);
       item.dataset.docPath = result.path;
       if (result.iconColor) item.style.setProperty("--nav-icon-color", result.iconColor);
@@ -656,20 +812,91 @@
     });
   }
 
+  function countSearchTerm(value, term) {
+    let count = 0;
+    let offset = 0;
+    while (term && offset < value.length) {
+      const matchIndex = value.indexOf(term, offset);
+      if (matchIndex < 0) break;
+      count += 1;
+      offset = matchIndex + term.length;
+    }
+    return count;
+  }
+
+  function staticSearchSnippet(plainBody, query) {
+    const text = String(plainBody || "").replace(/\n/g, " ");
+    const lower = text.toLocaleLowerCase();
+    const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const matchIndex = Math.max(0, ...terms.map((term) => lower.indexOf(term)).filter((value) => value >= 0));
+    const start = Math.max(0, matchIndex - 54);
+    const end = Math.min(text.length, start + 150);
+    return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
+  }
+
+  function makeStaticSearchResults(documents, query) {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!normalized) return [];
+    const terms = normalized.split(/\s+/).filter(Boolean);
+    return documents.map((document) => {
+      const title = String(document.title || "");
+      const pathValue = String(document.path || "");
+      const plainBody = String(document.plainBody || "");
+      const haystack = String(document.searchText || `${title}\n${pathValue}\n${plainBody}`).toLocaleLowerCase();
+      if (!terms.every((term) => haystack.includes(term))) return null;
+      let score = 0;
+      if (title.toLocaleLowerCase().includes(normalized)) score += 80;
+      if (pathValue.toLocaleLowerCase().includes(normalized)) score += 45;
+      terms.forEach((term) => { score += countSearchTerm(haystack, term); });
+      return {
+        path: pathValue,
+        title,
+        description: String(document.description || ""),
+        snippet: staticSearchSnippet(plainBody, normalized),
+        score,
+        icon: document.icon,
+        iconColor: document.iconColor || "",
+        iconColors: Array.isArray(document.iconColors) ? document.iconColors : []
+      };
+    }).filter(Boolean).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, 30);
+  }
+
+  async function loadStaticSearchIndex() {
+    if (!state.staticSearchPromise) {
+      state.staticSearchPromise = requestJson(staticUrl("search-index.json")).then((payload) => Array.isArray(payload) ? payload : payload.documents || []).catch((error) => {
+        state.staticSearchPromise = null;
+        throw error;
+      });
+    }
+    return state.staticSearchPromise;
+  }
+
   async function runSearch(query) {
+    const requestId = ++state.searchRequestId;
+    if (state.searchAbortController) state.searchAbortController.abort();
+    const controller = createAbortController();
+    state.searchAbortController = controller;
     const normalized = query.trim();
     if (!normalized) {
+      state.searchResults = [];
       searchResults.innerHTML = '<span class="search-empty">输入关键词，搜索全部 Markdown 文档</span>';
+      state.searchAbortController = null;
       return;
     }
     searchResults.innerHTML = '<span class="search-empty"><span class="loading-spinner"></span>正在搜索正文...</span>';
     try {
-      const payload = await requestJson(`/api/search?q=${encodeURIComponent(normalized)}`);
+      const payload = staticBuildData()
+        ? { results: makeStaticSearchResults(await loadStaticSearchIndex(), normalized) }
+        : await requestJson(`/api/search?q=${encodeURIComponent(normalized)}`, controller ? { signal: controller.signal } : {});
+      if (requestId !== state.searchRequestId) return;
       state.searchResults = payload.results || [];
       state.selectedSearchIndex = 0;
       renderSearchResults(state.searchResults);
     } catch (error) {
+      if (requestId !== state.searchRequestId || error.name === "AbortError") return;
       searchResults.innerHTML = `<span class="search-empty">${escapeHtml(error.message || "搜索失败")}</span>`;
+    } finally {
+      if (state.searchAbortController === controller) state.searchAbortController = null;
     }
   }
 
@@ -696,7 +923,9 @@
     const documentLink = event.target.closest("[data-doc-path]");
     if (documentLink) {
       event.preventDefault();
-      loadDocument(documentLink.dataset.docPath, true);
+      let hash = "";
+      try { hash = new URL(documentLink.getAttribute("href") || "", window.location.href).hash; } catch (error) { /* 使用无锚点导航 */ }
+      loadDocument(documentLink.dataset.docPath, true, hash);
       if (searchModal.classList.contains("is-open")) closeSearch();
     }
 
@@ -710,22 +939,11 @@
       }
     }
 
-    const tocLink = event.target.closest(".toc__link");
-    if (tocLink) {
-      event.preventDefault();
-      document.querySelectorAll(".toc__link").forEach((link) => link.classList.toggle("is-active", link === tocLink));
-      const targetId = tocLink.dataset.headingId;
-      const target = targetId ? document.getElementById(targetId) : null;
-      if (target) {
-        window.history.pushState({}, "", tocLink.getAttribute("href"));
-        target.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    }
-
     const copyButton = event.target.closest(".copy-button");
     if (copyButton) {
       const copyText = copyButton.dataset.copy || "";
-      const copy = navigator.clipboard ? navigator.clipboard.writeText(copyText) : Promise.reject(new Error("clipboard unavailable"));
+      const clipboard = window.navigator && window.navigator.clipboard;
+      const copy = clipboard ? clipboard.writeText(copyText) : Promise.reject(new Error("clipboard unavailable"));
       copy.then(() => {
         copyButton.classList.add("is-copied");
         const label = copyButton.querySelector("span");
@@ -758,18 +976,37 @@
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openSearch(); }
     if (event.key === "Escape") { closeSearch(); toggleSidebar(false); }
+    if (event.key === "Tab" && searchModal.classList.contains("is-open")) {
+      const focusable = [searchInput, ...Array.from(searchModal.querySelectorAll("a[href], button:not([disabled])"))].filter((element) => !element.hidden);
+      if (!focusable.length) return;
+      const currentIndex = focusable.indexOf(document.activeElement);
+      const nextIndex = (currentIndex + (event.shiftKey ? -1 : 1) + focusable.length) % focusable.length;
+      event.preventDefault();
+      focusable[nextIndex].focus();
+    }
   });
 
   window.addEventListener("popstate", () => {
-    const pathValue = new URLSearchParams(window.location.search).get("doc") || state.defaultPath;
+    const pathValue = new URLSearchParams(window.location.search).get("doc") || (staticBuildData() ? staticDocumentPathFromLocation() : state.defaultPath);
     if (pathValue === state.currentPath) scrollToHash(window.location.hash, "smooth");
-    else loadDocument(pathValue, false);
+    else loadDocument(pathValue, false, window.location.hash);
   });
 
   (async function bootstrap() {
     setTheme(getTheme());
     try {
-      const payload = await requestJson("/api/bootstrap");
+      let payload;
+      const staticDataElement = document.getElementById("docskit-static-data");
+      if (staticDataElement) {
+        try {
+          payload = JSON.parse(staticDataElement.textContent || "{}");
+        } catch (error) {
+          throw new Error("静态页面数据损坏");
+        }
+        state.staticBuild = payload.staticBuild || null;
+      } else {
+        payload = await requestJson("/api/bootstrap");
+      }
       state.config = payload.config || {};
       state.tree = payload.tree || [];
       state.documents = payload.documents || [];
@@ -778,9 +1015,16 @@
       renderTopbar();
       renderSidebar();
       renderSiteFooter();
-      const requestedPath = new URLSearchParams(window.location.search).get("doc") || state.defaultPath;
-      if (requestedPath) await loadDocument(requestedPath, false);
-      else renderEmptyDocument("把 .md 文件放入配置的文档目录，然后刷新页面。");
+      const requestedPath = new URLSearchParams(window.location.search).get("doc") || (staticBuildData() ? staticDocumentPathFromLocation() : state.defaultPath) || payload.currentPath || state.defaultPath;
+      const currentDocument = payload.currentDocument && payload.currentDocument.path === requestedPath ? payload.currentDocument : null;
+      if (currentDocument) {
+        state.currentPath = currentDocument.path;
+        renderDocument(currentDocument);
+      } else if (requestedPath) {
+        await loadDocument(requestedPath, false, window.location.hash);
+      } else {
+        renderEmptyDocument("把 .md 文件放入配置的文档目录，然后刷新页面。");
+      }
     } catch (error) {
       renderEmptyDocument("请使用 `npm run dev` 启动文档服务后再打开此页面。");
       showToast(error.message || "无法连接文档服务", "error");

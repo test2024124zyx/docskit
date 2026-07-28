@@ -2,6 +2,11 @@
 .git
 .github
 node_modules
+test
+# 只排除 skill 源目录，保留公开的安装说明供运行时分发。
+skills/*
+!skills/
+!skills/install.md
 npm-debug.log*
 .chrome-*
 .docs-*.png

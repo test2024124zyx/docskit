@@ -3,304 +3,73 @@ const fs = require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
 const { URL } = require("node:url");
+const markdown = require("./markdown");
+const { startServer: startServerRuntime } = require("./server-lifecycle");
+const { createHttpError, assertNoSymlink, resolveExistingFile } = require("./server-filesystem");
+const assets = require("./server-assets");
 
-const ROOT_DIR = __dirname;
-const DEFAULT_PORT = 3000;
-const DEFAULT_DOCS_DIR = "docs";
-const CONFIG_FILE_NAME = "docs.config.json";
-const SEARCH_RESULT_LIMIT = 30;
-const SORT_MODE_CREATED_AT = "createdAt";
-const SORT_MODE_LOCALE = "locale";
-const DEFAULT_SORT_MODE = SORT_MODE_CREATED_AT;
-const ICON_STRATEGY_DEFAULT = "default";
-const ICON_STRATEGY_MODERN = "modern";
-const ICON_STRATEGY_MIXED = "mixed";
-const DEFAULT_ICON_STRATEGY = ICON_STRATEGY_DEFAULT;
-const EXPAND_MODE_ALL = "all";
-const EXPAND_MODE_ACCORDION = "accordion";
-const DEFAULT_EXPAND_MODE = EXPAND_MODE_ALL;
-const DEFAULT_NAV_INDENT = 12;
-const MIN_NAV_INDENT = 0;
-const MAX_NAV_INDENT = 48;
-const DEFAULT_FILE_ICON = "file-markdown";
-const DEFAULT_FOLDER_ICON = "folder";
-const DEFAULT_ICON_PALETTE = ["#3370ff", "#7c3aed", "#0f9d8a", "#d97706", "#d95850", "#0891b2", "#4f46e5", "#65a30d"];
-const MONO_FILE_ICONS = ["file-markdown", "file-text", "file", "file-plus", "file-code", "file-check", "file-cog", "file-search", "book-open", "scroll-text", "newspaper", "notebook-tabs", "text"];
-const MONO_FOLDER_ICONS = ["folder", "folder-open", "folder-plus", "folder-tree", "folder-cog", "folder-search", "folder-check"];
-const COLOR_FILE_ICONS = ["file-markdown", "file-text", "file-code", "book-open", "newspaper", "scroll-text", "graduation-cap", "notebook-tabs", "rocket", "palette", "sparkles", "flag"];
-const COLOR_FOLDER_ICONS = ["folder", "folder-open", "folder-tree", "folder-cog", "folder-git-2", "layers", "network", "workflow", "package", "blocks"];
-const MULTICOLOR_ICON_COLOR_COUNT = 3;
-const DEFAULT_CONFIG = {
-  docsDir: DEFAULT_DOCS_DIR,
-  site: {
-    brand: { name: "docs", accent: "kit" },
-    context: "文档",
-    eyebrow: "DOCUMENTATION",
-    title: "我的文档",
-    description: "按目录组织的 Markdown 知识库",
-    logo: "",
-    favicon: "",
-    ico: "",
-    seo: {
-      title: "",
-      description: "",
-      keywords: "",
-      image: "",
-      author: "",
-      robots: "",
-      canonical: "",
-      themeColor: ""
-    },
-    footer: {
-      copyright: "",
-      icp: "",
-      beian: "",
-      links: []
-    }
-  },
-  topbar: {
-    version: "",
-    links: [],
-    search: true,
-    themeToggle: true
-  },
-  sidebar: {
-    sort: DEFAULT_SORT_MODE,
-    iconStrategy: DEFAULT_ICON_STRATEGY,
-    expandMode: DEFAULT_EXPAND_MODE,
-    indent: DEFAULT_NAV_INDENT,
-    iconColor: "",
-    iconPalette: DEFAULT_ICON_PALETTE,
-    defaultFileIcon: "",
-    defaultFolderIcon: "",
-    icons: {},
-    footer: {}
-  }
-};
+const {
+  escapeHtml,
+  parseValue,
+  splitFrontMatter,
+  stripMarkdown,
+  humanizeName,
+  firstHeading,
+  firstParagraph,
+  renderInline,
+  parseMarkdown,
+  renderMarkdown
+} = markdown;
 
-const configCache = new Map();
+const serverConfig = require("./server-config");
+const {
+  ROOT_DIR,
+  SEARCH_RESULT_LIMIT,
+  MAX_SEARCH_QUERY_LENGTH,
+  MAX_MARKDOWN_BYTES,
+  MAX_ASSET_BYTES,
+  MAX_MEDIA_BYTES,
+  MAX_DOWNLOAD_BYTES,
+  INDEX_POLL_INTERVAL_MS,
+  SKILL_ARCHIVE_PATH,
+  STATIC_RESOURCE_PATHS,
+  SORT_MODE_CREATED_AT,
+  SORT_MODE_LOCALE,
+  ICON_STRATEGY_DEFAULT,
+  ICON_STRATEGY_MODERN,
+  ICON_STRATEGY_MIXED,
+  DEFAULT_FILE_ICON,
+  DEFAULT_FOLDER_ICON,
+  MONO_FILE_ICONS,
+  MONO_FOLDER_ICONS,
+  COLOR_FILE_ICONS,
+  COLOR_FOLDER_ICONS,
+  MULTICOLOR_ICON_COLOR_COUNT,
+  DEFAULT_CONFIG,
+  cliArgs,
+  port,
+  host,
+  parseArgs,
+  isObject,
+  normalizeRelative,
+  iconValue,
+  normalizeIconStrategy,
+  normalizeIconPalette,
+  normalizeColorValue,
+  normalizeFooterLinks,
+  mergeConfig,
+  resolveFromRoot,
+  pathSetting,
+  configFileSignature,
+  readConfigFile,
+  loadConfig,
+  safeResolve
+} = serverConfig;
+
 const documentIndexCache = new Map();
-
-function parseArgs(argv) {
-  const args = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === "--docs") args.docsDir = argv[index + 1];
-    if (argv[index] === "--config") args.configPath = argv[index + 1];
-    if (argv[index] === "--port") args.port = argv[index + 1];
-  }
-  return args;
-}
-
-const cliArgs = parseArgs(process.argv.slice(2));
-const port = Number(cliArgs.port || process.env.PORT || DEFAULT_PORT);
-const host = process.env.HOST || "127.0.0.1";
-
-function isObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value);
-}
-
-function normalizeSortMode(value) {
-  const aliases = {
-    created: SORT_MODE_CREATED_AT,
-    creation: SORT_MODE_CREATED_AT,
-    creationTime: SORT_MODE_CREATED_AT,
-    name: SORT_MODE_LOCALE,
-    title: SORT_MODE_LOCALE,
-    localeCompare: SORT_MODE_LOCALE
-  };
-  const normalized = aliases[value] || value;
-  return normalized === SORT_MODE_LOCALE ? SORT_MODE_LOCALE : DEFAULT_SORT_MODE;
-}
-
-function normalizeIconStrategy(value) {
-  return [ICON_STRATEGY_DEFAULT, ICON_STRATEGY_MODERN, ICON_STRATEGY_MIXED].includes(value) ? value : DEFAULT_ICON_STRATEGY;
-}
-
-function normalizeExpandMode(value) {
-  return value === EXPAND_MODE_ACCORDION ? EXPAND_MODE_ACCORDION : DEFAULT_EXPAND_MODE;
-}
-
-function normalizeIndent(value) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) return DEFAULT_NAV_INDENT;
-  return Math.min(MAX_NAV_INDENT, Math.max(MIN_NAV_INDENT, numericValue));
-}
-
-function normalizeIconPalette(value) {
-  const source = Array.isArray(value) ? value : DEFAULT_ICON_PALETTE;
-  const palette = source.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
-  return palette.length ? palette : [...DEFAULT_ICON_PALETTE];
-}
-
-// 统一归一化配置，避免错误值影响导航、品牌和页脚的运行时行为。
-function mergeConfig(source) {
-  const input = isObject(source) ? source : {};
-  const siteInput = isObject(input.site) ? input.site : {};
-  const brand = isObject(siteInput.brand) ? siteInput.brand : {};
-  const seo = isObject(siteInput.seo) ? siteInput.seo : {};
-  const footer = isObject(siteInput.footer) ? siteInput.footer : {};
-  const topbar = isObject(input.topbar) ? input.topbar : {};
-  const sidebarInput = isObject(input.sidebar) ? input.sidebar : {};
-  const sidebar = {
-    ...DEFAULT_CONFIG.sidebar,
-    ...sidebarInput,
-    sort: normalizeSortMode(sidebarInput.sort),
-    iconStrategy: normalizeIconStrategy(sidebarInput.iconStrategy),
-    expandMode: normalizeExpandMode(sidebarInput.expandMode),
-    indent: normalizeIndent(sidebarInput.indent),
-    iconPalette: normalizeIconPalette(sidebarInput.iconPalette)
-  };
-  return {
-    ...DEFAULT_CONFIG,
-    ...input,
-    site: {
-      ...DEFAULT_CONFIG.site,
-      ...siteInput,
-      brand: { ...DEFAULT_CONFIG.site.brand, ...brand },
-      seo: { ...DEFAULT_CONFIG.site.seo, ...seo },
-      footer: {
-        ...DEFAULT_CONFIG.site.footer,
-        ...footer,
-        links: Array.isArray(footer.links) ? footer.links : []
-      }
-    },
-    topbar: { ...DEFAULT_CONFIG.topbar, ...topbar },
-    sidebar
-  };
-}
-
-function resolveFromRoot(value) {
-  if (typeof value !== "string" || !value.trim()) return ROOT_DIR;
-  return path.isAbsolute(value) ? path.normalize(value) : path.resolve(ROOT_DIR, value);
-}
-
-function pathSetting(value, fallback) {
-  return typeof value === "string" && value.trim() ? value : fallback;
-}
-
-function getConfigPath() {
-  const explicitPath = cliArgs.configPath || process.env.DOCS_CONFIG;
-  if (explicitPath) return resolveFromRoot(explicitPath);
-  const docsHint = pathSetting(cliArgs.docsDir || process.env.DOCS_DIR, DEFAULT_DOCS_DIR);
-  return path.resolve(resolveFromRoot(docsHint), CONFIG_FILE_NAME);
-}
-
-function configFileSignature(stat) {
-  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
-}
-
-async function readConfigFile(configPath) {
-  let fileSignature = "missing";
-  let fileStat;
-  try {
-    fileStat = await fsp.stat(configPath);
-    fileSignature = configFileSignature(fileStat);
-  } catch (error) {
-    fileSignature = `${error.code || "error"}:${error.message}`;
-    const cached = configCache.get(configPath);
-    if (cached && cached.signature === fileSignature) return cached.value;
-    if (error.code !== "ENOENT") console.warn(`无法读取配置文件 ${configPath}，将使用默认配置：${error.message}`);
-    const value = {};
-    configCache.set(configPath, { signature: fileSignature, value });
-    return value;
-  }
-
-  const cached = configCache.get(configPath);
-  if (cached && cached.signature === fileSignature) return cached.value;
-
-  let value = {};
-  try {
-    value = JSON.parse(await fsp.readFile(configPath, "utf8"));
-  } catch (error) {
-    console.warn(`配置文件 ${configPath} 无法解析，将使用默认配置：${error.message}`);
-  }
-  configCache.set(configPath, { signature: fileSignature, value });
-  return value;
-}
-
-async function loadConfig() {
-  const configPath = getConfigPath();
-  const parsed = await readConfigFile(configPath);
-  const config = mergeConfig(parsed);
-  const docsSetting = pathSetting(cliArgs.docsDir || process.env.DOCS_DIR || config.docsDir, DEFAULT_DOCS_DIR);
-  return { config, configPath, docsDir: resolveFromRoot(docsSetting) };
-}
-
-function normalizeRelative(value) {
-  return String(value || "").replace(/\\/g, "/").replace(/^\/+/, "");
-}
-
-function safeResolve(root, input) {
-  const normalized = normalizeRelative(input);
-  if (!normalized || normalized.includes("\0")) throw new Error("无效路径");
-  const resolved = path.resolve(root, normalized);
-  const relative = path.relative(root, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("路径超出文档目录");
-  return resolved;
-}
 
 function toPosix(value) {
   return value.split(path.sep).join("/");
-}
-
-function parseValue(value) {
-  const trimmed = value.trim();
-  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) return trimmed.slice(1, -1);
-  if (trimmed === "true") return true;
-  if (trimmed === "false") return false;
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  return trimmed;
-}
-
-function splitFrontMatter(source) {
-  const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
-  if (lines[0].trim() !== "---") return { attributes: {}, body: source };
-  const end = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
-  if (end < 0) return { attributes: {}, body: source };
-  const attributes = {};
-  lines.slice(1, end).forEach((line) => {
-    const match = line.match(/^([\w-]+)\s*:\s*(.*)$/);
-    if (match) attributes[match[1]] = parseValue(match[2]);
-  });
-  return { attributes, body: lines.slice(end + 1).join("\n") };
-}
-
-function stripMarkdown(value) {
-  return String(value || "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/[>*_`~]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function humanizeName(value) {
-  const withoutExtension = value.replace(/\.(markdown|md)$/i, "");
-  const clean = withoutExtension.replace(/^\d+[-_. ]*/, "").replace(/[-_]+/g, " ").trim();
-  if (!clean) return value;
-  if (/^(readme|index)$/i.test(clean)) return "首页";
-  return clean.charAt(0).toUpperCase() + clean.slice(1);
-}
-
-function firstHeading(source) {
-  const match = source.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/m);
-  return match ? stripMarkdown(match[1]) : "";
-}
-
-function firstParagraph(source) {
-  const lines = source.split(/\r?\n/);
-  const paragraph = [];
-  for (const line of lines) {
-    if (!line.trim()) {
-      if (paragraph.length) break;
-      continue;
-    }
-    if (/^\s{0,3}#{1,6}\s+/.test(line) || /^\s*```/.test(line)) continue;
-    paragraph.push(line.trim());
-  }
-  return stripMarkdown(paragraph.join(" ")).slice(0, 130);
 }
 
 function compareNames(left, right) {
@@ -314,10 +83,6 @@ function stableHash(value) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
-}
-
-function iconValue(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
 function selectStableIcon(icons, relativePath, type, variant) {
@@ -416,26 +181,29 @@ async function scanDocuments(docsDir) {
   const documents = [];
   const directories = new Set();
   const directoryMetadata = new Map();
+  const signatureParts = [];
   async function walk(directory, prefix) {
     let entries;
     let directoryStat;
     try {
       [entries, directoryStat] = await Promise.all([
         fsp.readdir(directory, { withFileTypes: true }),
-        fsp.stat(directory)
+        fsp.lstat(directory)
       ]);
     } catch (error) {
       if (error.code === "ENOENT") return;
       throw error;
     }
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return;
     directories.add(directory);
     directoryMetadata.set(prefix, creationTime(directoryStat));
+    signatureParts.push(`d:${prefix}:${directoryStat.size}:${directoryStat.mtimeMs}:${directoryStat.ctimeMs}`);
     entries.sort((left, right) => {
       if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
       return compareNames(left.name, right.name);
     });
     for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.isSymbolicLink()) continue;
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolutePath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
@@ -446,8 +214,16 @@ async function scanDocuments(docsDir) {
       let raw;
       let fileStat;
       try {
+        fileStat = await fsp.lstat(absolutePath);
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        throw error;
+      }
+      if (!fileStat.isFile() || fileStat.isSymbolicLink()) continue;
+      signatureParts.push(`f:${relativePath}:${fileStat.size}:${fileStat.mtimeMs}:${fileStat.ctimeMs}`);
+      if (fileStat.size > MAX_MARKDOWN_BYTES) continue;
+      try {
         raw = await fsp.readFile(absolutePath, "utf8");
-        fileStat = await fsp.stat(absolutePath);
       } catch (error) {
         if (error.code === "ENOENT") continue;
         throw error;
@@ -478,7 +254,47 @@ async function scanDocuments(docsDir) {
   visibleDocuments.forEach((document) => {
     document.searchText = `${document.title}\n${document.path}\n${document.plainBody}`.toLocaleLowerCase();
   });
-  return { documents: visibleDocuments, directories, directoryMetadata };
+  return { documents: visibleDocuments, directories, directoryMetadata, filesystemSignature: signatureParts.sort().join("|") };
+}
+
+async function scanFilesystemSignature(docsDir) {
+  const signatureParts = [];
+  async function walk(directory, prefix) {
+    let entries;
+    let directoryStat;
+    try {
+      [entries, directoryStat] = await Promise.all([
+        fsp.readdir(directory, { withFileTypes: true }),
+        fsp.lstat(directory)
+      ]);
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return;
+    signatureParts.push(`d:${prefix}:${directoryStat.size}:${directoryStat.mtimeMs}:${directoryStat.ctimeMs}`);
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.isSymbolicLink()) continue;
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath, relativePath);
+        continue;
+      }
+      if (!/\.(md|markdown)$/i.test(entry.name)) continue;
+      let fileStat;
+      try {
+        fileStat = await fsp.lstat(absolutePath);
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        throw error;
+      }
+      if (!fileStat.isFile() || fileStat.isSymbolicLink()) continue;
+      signatureParts.push(`f:${relativePath}:${fileStat.size}:${fileStat.mtimeMs}:${fileStat.ctimeMs}`);
+    }
+  }
+  await walk(docsDir, "");
+  return signatureParts.sort().join("|");
 }
 
 function createDocumentIndexState(docsDir) {
@@ -491,7 +307,9 @@ function createDocumentIndexState(docsDir) {
     promise: null,
     watchers: new Map(),
     watchUnavailable: false,
-    watchWarningShown: false
+    watchWarningShown: false,
+    filesystemSignature: "",
+    lastSignatureCheckAt: 0
   };
 }
 
@@ -553,7 +371,12 @@ async function getDocumentIndex(docsDir) {
     state = createDocumentIndexState(cacheKey);
     documentIndexCache.set(cacheKey, state);
   }
-  if (!state.dirty && !state.watchUnavailable) return documentIndexResult(state);
+  if (!state.dirty && Date.now() - state.lastSignatureCheckAt >= INDEX_POLL_INTERVAL_MS) {
+    state.lastSignatureCheckAt = Date.now();
+    const filesystemSignature = await scanFilesystemSignature(state.docsDir);
+    if (filesystemSignature !== state.filesystemSignature) markDocumentIndexDirty(state);
+  }
+  if (!state.dirty) return documentIndexResult(state);
   if (state.promise) return state.promise;
 
   const scanRevision = state.revision;
@@ -562,8 +385,10 @@ async function getDocumentIndex(docsDir) {
       const result = await scanDocuments(state.docsDir);
       state.documents = result.documents;
       state.directoryMetadata = result.directoryMetadata;
+      state.filesystemSignature = result.filesystemSignature;
+      state.lastSignatureCheckAt = Date.now();
       const hasDirectoryToWatch = syncDirectoryWatchers(state, result.directories);
-      state.dirty = state.watchUnavailable || !hasDirectoryToWatch || state.revision !== scanRevision;
+      state.dirty = !hasDirectoryToWatch || state.revision !== scanRevision;
       return documentIndexResult(state);
     } catch (error) {
       state.dirty = true;
@@ -638,155 +463,12 @@ function encodePath(value) {
   return normalizeRelative(value).split("/").map(encodeURIComponent).join("/");
 }
 
-function escapeHtml(value) {
-  return String(value || "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
-}
-
-function slugify(value, index) {
-  const clean = stripMarkdown(value).toLowerCase().replace(/[^\w\u4e00-\u9fff -]/g, "").replace(/[\s-]+/g, "-").replace(/^-+|-+$/g, "");
-  return clean || `section-${index}`;
-}
-
-function markdownTarget(rawTarget, currentPath, kind) {
-  const target = String(rawTarget || "").trim();
-  if (/^(https?:|mailto:|tel:|data:)/i.test(target)) return { href: target, external: true };
-  if (target.startsWith("#")) return { href: target, external: false };
-  const hashIndex = target.indexOf("#");
-  const pathPart = hashIndex >= 0 ? target.slice(0, hashIndex) : target;
-  const hash = hashIndex >= 0 ? target.slice(hashIndex) : "";
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(normalizeRelative(currentPath)), pathPart));
-  if (resolved.startsWith("../") || resolved === "..") return { href: "#", external: false };
-  if (kind === "document" || /\.(md|markdown)$/i.test(pathPart)) {
-    return { href: `/?doc=${encodeURIComponent(resolved)}${hash}`, docPath: resolved, external: false };
-  }
-  return { href: `/api/asset?path=${encodeURIComponent(resolved)}`, external: false };
-}
-
-function renderInline(source, currentPath) {
-  const pattern = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)|\[([^\]]+)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|(?<!\w)\*([^*]+)\*(?!\w)|:icon\[([A-Za-z][\w-]*)\]/g;
-  let result = "";
-  let cursor = 0;
-  let match;
-  while ((match = pattern.exec(source))) {
-    result += escapeHtml(source.slice(cursor, match.index));
-    if (match[1] !== undefined) {
-      const target = markdownTarget(match[2], currentPath, "asset");
-      const title = match[3] ? ` title="${escapeHtml(match[3])}"` : "";
-      result += `<img src="${escapeHtml(target.href)}" alt="${escapeHtml(match[1])}"${title} loading="lazy" />`;
-    } else if (match[4] !== undefined) {
-      const target = markdownTarget(match[5], currentPath, "document");
-      const external = target.external ? ' target="_blank" rel="noreferrer"' : "";
-      const docPath = target.docPath ? ` data-doc-path="${escapeHtml(target.docPath)}"` : "";
-      const title = match[6] ? ` title="${escapeHtml(match[6])}"` : "";
-      result += `<a href="${escapeHtml(target.href)}"${external}${docPath}${title}>${escapeHtml(match[4])}</a>`;
-    } else if (match[7] !== undefined) result += `<code>${escapeHtml(match[7])}</code>`;
-    else if (match[8] !== undefined || match[9] !== undefined) result += `<strong>${escapeHtml(match[8] || match[9])}</strong>`;
-    else if (match[10] !== undefined) result += `<del>${escapeHtml(match[10])}</del>`;
-    else if (match[11] !== undefined) result += `<em>${escapeHtml(match[11])}</em>`;
-    else if (match[12] !== undefined) result += `<span class="markdown-icon" data-icon-name="${escapeHtml(match[12])}" role="img" aria-label="${escapeHtml(match[12])}"></span>`;
-    cursor = pattern.lastIndex;
-  }
-  return result + escapeHtml(source.slice(cursor));
-}
-
-function splitTableRow(line) {
-  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
-}
-
-function renderMarkdown(source, currentPath) {
-  const lines = source.replace(/\r\n/g, "\n").split("\n");
-  const html = [];
-  const headings = [];
-  const usedIds = new Set();
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim()) { index += 1; continue; }
-    const fence = line.match(/^\s{0,3}(```+|~~~+)\s*([^ ]*)\s*$/);
-    if (fence) {
-      const codeLines = [];
-      index += 1;
-      while (index < lines.length && !new RegExp(`^\\s{0,3}${fence[1][0]}{3,}\\s*$`).test(lines[index])) { codeLines.push(lines[index]); index += 1; }
-      if (index < lines.length) index += 1;
-      const language = fence[2] || "code";
-      const code = codeLines.join("\n");
-      html.push(`<div class="code-block markdown-code"><div class="code-header"><span>${escapeHtml(language)}</span><button class="copy-button" type="button" data-copy="${escapeHtml(code)}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="1.5" /><path d="M5 16V5a1 1 0 0 1 1-1h11" /></svg><span>复制</span></button></div><pre><code>${escapeHtml(code)}</code></pre></div>`);
-      continue;
-    }
-    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-    if (heading) {
-      const level = heading[1].length;
-      const text = heading[2].trim();
-      const baseId = slugify(text, headings.length + 1);
-      let id = baseId;
-      let suffix = 2;
-      while (usedIds.has(id)) { id = `${baseId}-${suffix}`; suffix += 1; }
-      usedIds.add(id);
-      headings.push({ id, level, title: stripMarkdown(text) });
-      html.push(`<h${level} id="${escapeHtml(id)}">${renderInline(text, currentPath)}</h${level}>`);
-      index += 1;
-      continue;
-    }
-    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
-      html.push("<hr />");
-      index += 1;
-      continue;
-    }
-    if (line.includes("|") && index + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1])) {
-      const header = splitTableRow(line);
-      const aligns = splitTableRow(lines[index + 1]).map((cell) => cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : cell.startsWith(":") ? "left" : "");
-      const rows = [];
-      index += 2;
-      while (index < lines.length && lines[index].trim() && lines[index].includes("|")) { rows.push(splitTableRow(lines[index])); index += 1; }
-      html.push(`<div class="markdown-table-wrap"><table><thead><tr>${header.map((cell, cellIndex) => `<th${aligns[cellIndex] ? ` style="text-align:${aligns[cellIndex]}"` : ""}>${renderInline(cell, currentPath)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${header.map((_, cellIndex) => `<td${aligns[cellIndex] ? ` style="text-align:${aligns[cellIndex]}"` : ""}>${renderInline(row[cellIndex] || "", currentPath)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
-      continue;
-    }
-    if (/^\s{0,3}>/.test(line)) {
-      const quote = [];
-      while (index < lines.length && /^\s{0,3}>/.test(lines[index])) { quote.push(lines[index].replace(/^\s{0,3}>\s?/, "")); index += 1; }
-      const alert = quote[0] && quote[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$/i);
-      if (alert) {
-        const alertType = alert[1].toLowerCase();
-        const alertLabels = { note: "提示", tip: "建议", important: "重要", warning: "注意", caution: "注意" };
-        html.push(`<aside class="markdown-callout markdown-callout--${alertType}"><strong>${alertLabels[alertType] || "提示"}</strong>${quote.slice(1).map((item) => `<p>${renderInline(item, currentPath)}</p>`).join("")}</aside>`);
-      } else {
-        html.push(`<blockquote>${quote.map((item) => `<p>${renderInline(item, currentPath)}</p>`).join("")}</blockquote>`);
-      }
-      continue;
-    }
-    const listMatch = line.match(/^\s{0,3}([-+*]|\d+\.)\s+(.+)$/);
-    if (listMatch) {
-      const ordered = /^\d/.test(listMatch[1]);
-      const items = [];
-      while (index < lines.length) {
-        const itemMatch = lines[index].match(/^\s{0,3}([-+*]|\d+\.)\s+(.+)$/);
-        if (!itemMatch || /^\d/.test(itemMatch[1]) !== ordered) break;
-        const task = itemMatch[2].match(/^\[([ xX])\]\s+(.*)$/);
-        const content = task ? `<label class="task-item"><input type="checkbox" disabled${task[1].toLowerCase() === "x" ? " checked" : ""} />${renderInline(task[2], currentPath)}</label>` : renderInline(itemMatch[2], currentPath);
-        items.push(`<li>${content}</li>`);
-        index += 1;
-      }
-      const tag = ordered ? "ol" : "ul";
-      html.push(`<${tag}>${items.join("")}</${tag}>`);
-      continue;
-    }
-    const paragraph = [line.trim()];
-    index += 1;
-    while (index < lines.length && lines[index].trim() && !/^\s{0,3}(#{1,6})\s+/.test(lines[index]) && !/^\s{0,3}(```|~~~)/.test(lines[index]) && !/^\s{0,3}>/.test(lines[index]) && !/^\s{0,3}([-+*]|\d+\.)\s+/.test(lines[index])) {
-      paragraph.push(lines[index].trim());
-      index += 1;
-    }
-    html.push(`<p>${renderInline(paragraph.join("\n"), currentPath)}</p>`);
-  }
-  return { html: html.join("\n"), headings };
-}
-
 function documentIcon(config, document) {
   return resolveIcon(config.sidebar, document.path, "file", document.icon, document.path.split("/").length - 1);
 }
 
-function publicDocument(document, config) {
-  const rendered = renderMarkdown(document.body, document.path);
+function publicDocument(document, config, options = {}) {
+  const rendered = renderMarkdown(document.body, document.path, { ...config.markdown, links: options.links });
   const icon = documentIcon(config, document);
   return {
     path: document.path,
@@ -828,19 +510,224 @@ function makeSearchResults(documents, query, config) {
   }).filter(Boolean).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, SEARCH_RESULT_LIMIT);
 }
 
-function jsonResponse(response, status, payload) {
-  const body = JSON.stringify(payload);
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "Content-Length": Buffer.byteLength(body) });
-  response.end(body);
+function imageSource(value, options = {}) {
+  const configured = isObject(value) ? value.src || value.url : value;
+  const source = typeof configured === "string" ? configured.trim() : "";
+  if (!source) return "";
+  if (/^(?:https?:|data:|blob:|\/\/|\/)/i.test(source)) return source;
+  if (typeof options.assetUrl === "function") return options.assetUrl(source);
+  return `/api/asset?path=${encodeURIComponent(source)}`;
 }
 
-const MIME_TYPES = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon", ".pdf": "application/pdf" };
+function seoValues(config, documentData, pageUrl, options = {}) {
+  const site = config.site || {};
+  const seo = isObject(site.seo) ? site.seo : {};
+  const brand = isObject(site.brand) ? site.brand : { name: site.brand || "docs", accent: "" };
+  const siteTitle = String(seo.title || site.title || `${brand.name || "docs"}${brand.accent || ""}` || "文档站点");
+  const title = documentData ? `${documentData.title} - ${siteTitle}` : siteTitle;
+  const description = String(documentData?.description || seo.description || site.description || "Markdown 文档站点");
+  const keywords = Array.isArray(seo.keywords) ? seo.keywords.filter((item) => typeof item === "string").join(", ") : String(seo.keywords || "");
+  const image = imageSource(seo.image || seo.ogImage || site.logo, options);
+  return {
+    title,
+    description,
+    keywords,
+    author: String(seo.author || ""),
+    robots: String(seo.robots || "index,follow"),
+    themeColor: normalizeColorValue(seo.themeColor),
+    canonical: String(seo.canonical || pageUrl),
+    image,
+    type: documentData ? "article" : "website",
+    url: pageUrl
+  };
+}
 
-async function sendFile(response, filePath) {
-  const data = await fsp.readFile(filePath);
-  const type = MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream";
-  response.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store", "Content-Length": data.length });
-  response.end(data);
+function publicConfig(config) {
+  const site = config.site || {};
+  const sidebar = config.sidebar || {};
+  const seo = isObject(site.seo) ? site.seo : {};
+  const footer = isObject(site.footer) ? site.footer : {};
+  const publicMedia = (value) => {
+    if (!isObject(value)) return typeof value === "string" ? value : "";
+    return { src: typeof value.src === "string" ? value.src : "", url: typeof value.url === "string" ? value.url : "", alt: typeof value.alt === "string" ? value.alt : "" };
+  };
+  return {
+    site: {
+      brand: isObject(site.brand) ? { name: site.brand.name, accent: site.brand.accent } : site.brand,
+      context: String(site.context || "文档"),
+      eyebrow: String(site.eyebrow || "DOCUMENTATION"),
+      title: String(site.title || "我的文档"),
+      description: String(site.description || ""),
+      logo: publicMedia(site.logo),
+      favicon: publicMedia(site.favicon),
+      ico: publicMedia(site.ico),
+      seo: {
+        title: String(seo.title || ""),
+        description: String(seo.description || ""),
+        keywords: Array.isArray(seo.keywords) ? seo.keywords.filter((item) => typeof item === "string") : String(seo.keywords || ""),
+        image: publicMedia(seo.image),
+        ogImage: publicMedia(seo.ogImage),
+        author: String(seo.author || ""),
+        robots: String(seo.robots || ""),
+        canonical: String(seo.canonical || ""),
+        themeColor: normalizeColorValue(seo.themeColor)
+      },
+      footer: {
+        copyright: String(footer.copyright || ""),
+        icp: String(footer.icp || ""),
+        beian: String(footer.beian || ""),
+        links: normalizeFooterLinks(footer.links)
+      }
+    },
+    topbar: {
+      version: config.topbar?.version || "",
+      links: Array.isArray(config.topbar?.links) ? config.topbar.links : [],
+      search: config.topbar?.search !== false,
+      themeToggle: config.topbar?.themeToggle !== false
+    },
+    markdown: {
+      code: {
+        highlight: config.markdown?.code?.highlight !== false,
+        lineNumbers: config.markdown?.code?.lineNumbers !== false,
+        copy: config.markdown?.code?.copy !== false,
+        wrap: config.markdown?.code?.wrap === true
+      }
+    },
+    sidebar: {
+      sort: sidebar.sort,
+      iconStrategy: sidebar.iconStrategy,
+      expandMode: sidebar.expandMode,
+      indent: sidebar.indent,
+      iconColor: sidebar.iconColor,
+      iconPalette: sidebar.iconPalette,
+      defaultFileIcon: sidebar.defaultFileIcon,
+      defaultFolderIcon: sidebar.defaultFolderIcon,
+      icons: isObject(sidebar.icons) ? sidebar.icons : {},
+      fileIcons: isObject(sidebar.fileIcons) ? sidebar.fileIcons : {},
+      folderIcons: isObject(sidebar.folderIcons) ? sidebar.folderIcons : {}
+    }
+  };
+}
+
+function escapeXml(value) {
+  return escapeHtml(value).replace(/&#39;/g, "&apos;");
+}
+
+function serializeInlineJson(value) {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function formatUpdatedAt(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("zh-CN");
+}
+
+function renderDocumentSection(documentData) {
+  const category = documentData.path.includes("/") ? documentData.path.split("/").slice(0, -1).join(" / ") : "DOCUMENT";
+  const hasH1 = (documentData.headings || []).some((heading) => heading.level === 1);
+  const description = documentData.description ? `<p class="lead doc-description">${escapeHtml(documentData.description)}</p>` : "";
+  const meta = formatUpdatedAt(documentData.updatedAt);
+  return `<section class="doc-section markdown-section" id="doc-page" data-title="${escapeHtml(documentData.title)}"><div class="section-kicker"><span class="kicker-line"></span>${escapeHtml(category)}</div>${hasH1 ? "" : `<h1 class="doc-title">${escapeHtml(documentData.title)}</h1>${description}`}<div class="doc-meta"><span>${escapeHtml(documentData.path)}</span><span>·</span><span>${meta ? `更新于 ${meta}` : ""}</span></div><div class="markdown-body">${documentData.html}</div></section>`;
+}
+
+function replaceHeadMeta(template, attribute, name, value) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<meta\\s+${attribute}="${escapedName}"\\s+content="[^"]*"\\s*/?>`, "i");
+  return template.replace(pattern, `<meta ${attribute}="${escapeHtml(name)}" content="${escapeHtml(value)}" />`);
+}
+
+function renderPage(template, config, documentData, pageUrl, options = {}) {
+  const seo = seoValues(config, documentData, pageUrl, options);
+  let html = template.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(seo.title)}</title>`);
+  [
+    ["name", "description", seo.description],
+    ["name", "keywords", seo.keywords],
+    ["name", "author", seo.author],
+    ["name", "robots", seo.robots],
+    ["name", "theme-color", seo.themeColor],
+    ["property", "og:title", seo.title],
+    ["property", "og:description", seo.description],
+    ["property", "og:type", seo.type],
+    ["property", "og:url", seo.url],
+    ["property", "og:image", seo.image],
+    ["name", "twitter:card", seo.image ? "summary_large_image" : "summary"],
+    ["name", "twitter:title", seo.title],
+    ["name", "twitter:description", seo.description],
+    ["name", "twitter:image", seo.image]
+  ].forEach(([attribute, name, value]) => { html = replaceHeadMeta(html, attribute, name, value); });
+  const canonical = `<link rel="canonical" href="${escapeHtml(seo.canonical)}" />`;
+  html = html.replace(/<link\s+rel="canonical"[^>]*>/i, canonical);
+  const faviconSource = imageSource(config.site?.favicon || config.site?.ico, options);
+  const faviconType = String(config.site?.favicon || config.site?.ico || "").toLowerCase().endsWith(".ico") ? "image/x-icon" : "image/png";
+  const favicon = `<link rel="icon" id="site-favicon"${faviconSource ? ` href="${escapeHtml(faviconSource)}" type="${faviconType}"` : ""} />`;
+  html = html.replace(/<link\s+rel="icon"\s+id="site-favicon"[^>]*>/i, favicon);
+  const content = documentData ? renderDocumentSection(documentData) : `<section class="doc-section empty-document"><h1>还没有 Markdown 文档</h1><p>把 Markdown 文件放入文档目录，然后刷新页面。</p></section>`;
+  html = html.replace(/<article\s+class="doc-article"\s+id="doc-content"\s+aria-live="polite">[\s\S]*?<\/article>/i, `<article class="doc-article" id="doc-content" aria-live="polite">${content}</article>`);
+  if (Object.prototype.hasOwnProperty.call(options, "staticData")) {
+    const staticData = `<script id="docskit-static-data" type="application/json">${serializeInlineJson(options.staticData)}</script>`;
+    html = html.replace(/<\/body>/i, `${staticData}</body>`);
+  }
+  return html;
+}
+
+function bodyEtag(body) {
+  return `"${stableHash(body).toString(16)}-${Buffer.byteLength(body)}"`;
+}
+
+function sendBody(response, status, body, headers, options = {}) {
+  const etag = bodyEtag(body);
+  const responseHeadersValue = assets.responseHeaders({ ...headers, ETag: etag });
+  if (options.request?.headers?.["if-none-match"] === etag) {
+    response.writeHead(304, responseHeadersValue);
+    response.end();
+    return;
+  }
+  response.writeHead(status, { ...responseHeadersValue, "Content-Length": Buffer.byteLength(body) });
+  response.end(options.request?.method === "HEAD" ? undefined : body);
+}
+
+function jsonResponse(response, status, payload, options = {}) {
+  const body = JSON.stringify(payload);
+  sendBody(response, status, body, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": options.cacheControl || "no-cache, must-revalidate" }, options);
+}
+
+function preferredDocument(documents) {
+  return documents.find((document) => /(^|\/)index\.(md|markdown)$/i.test(document.path)) || documents.find((document) => /(^|\/)readme\.(md|markdown)$/i.test(document.path)) || documents[0];
+}
+
+function pageUrlFor(requestUrl, documentPath) {
+  const pageUrl = new URL("/", requestUrl.origin);
+  if (documentPath) pageUrl.searchParams.set("doc", documentPath);
+  return pageUrl.href;
+}
+
+function renderRobots(config, origin, options = {}) {
+  const robots = String(config.site?.seo?.robots || "index,follow");
+  const disallow = /noindex/i.test(robots) ? "Disallow: /\n" : "Disallow:\n";
+  const sitemapUrl = String(options.sitemapUrl || (origin ? `${String(origin).replace(/\/+$/, "")}/sitemap.xml` : ""));
+  return `User-agent: *\n${disallow}${sitemapUrl ? `Sitemap: ${sitemapUrl}\n` : ""}`;
+}
+
+function renderSitemap(documents, origin, options = {}) {
+  const homeUrl = options.homeUrl || (origin ? new URL("/", origin).href : "/");
+  const documentUrl = typeof options.documentUrl === "function"
+    ? options.documentUrl
+    : (document) => {
+      const url = new URL("/", origin);
+      url.searchParams.set("doc", document.path);
+      return url.href;
+    };
+  const entries = documents.map((document) => {
+    const lastModified = new Date(document.updatedAt);
+    const lastmod = Number.isNaN(lastModified.getTime()) ? "" : `<lastmod>${lastModified.toISOString()}</lastmod>`;
+    return `<url><loc>${escapeXml(documentUrl(document))}</loc>${lastmod}</url>`;
+  }).join("");
+  return `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${escapeXml(homeUrl)}</loc></url>${entries}</urlset>`;
 }
 
 async function handleRequest(request, response, options = {}) {
@@ -848,82 +735,152 @@ async function handleRequest(request, response, options = {}) {
   const loadIndex = typeof options.getDocumentIndex === "function" ? options.getDocumentIndex : getDocumentIndex;
   const rootDir = options.rootDir || ROOT_DIR;
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
-  if (request.method !== "GET") return jsonResponse(response, 405, { error: "只支持 GET 请求" });
-  if (requestUrl.pathname === "/healthz") return jsonResponse(response, 200, { status: "ok", service: "docs-kit" });
+  if (!["GET", "HEAD"].includes(request.method)) return jsonResponse(response, 405, { error: "只支持 GET 和 HEAD 请求" }, { request, cacheControl: "no-store" });
+  if (requestUrl.pathname === "/healthz") return jsonResponse(response, 200, { status: "ok", service: "docs-kit" }, { request, cacheControl: "no-store" });
 
   const current = await loadCurrentConfig();
   const { config, docsDir } = current;
+
+  if (requestUrl.pathname === "/readyz") {
+    try {
+      const docsStat = await fsp.lstat(docsDir);
+      if (!docsStat.isDirectory()) throw new Error("文档目录不是目录");
+      const { documents } = await loadIndex(docsDir);
+      return jsonResponse(response, 200, { status: "ready", service: "docs-kit", documents: documents.length }, { request, cacheControl: "no-store" });
+    } catch (error) {
+      throw createHttpError(503, "文档服务尚未就绪", error);
+    }
+  }
 
   if (requestUrl.pathname === "/api/bootstrap") {
     const index = await loadIndex(docsDir);
     const { documents, directoryMetadata } = index;
     const tree = createTree(documents, config, directoryMetadata);
-    const preferred = documents.find((document) => /(^|\/)index\.(md|markdown)$/i.test(document.path)) || documents.find((document) => /(^|\/)readme\.(md|markdown)$/i.test(document.path)) || documents[0];
-    return jsonResponse(response, 200, { config, tree, defaultPath: preferred ? preferred.path : "", documents: documents.map((document) => {
+    const preferred = preferredDocument(documents);
+    return jsonResponse(response, 200, { config: publicConfig(config), tree, defaultPath: preferred ? preferred.path : "", documents: documents.map((document) => {
       const icon = documentIcon(config, document);
       return { path: document.path, title: document.title, description: document.description, icon: icon.name, iconColor: icon.color, iconColors: icon.colors, createdAt: document.createdAt };
-    }) });
+    }) }, { request });
   }
 
   if (requestUrl.pathname === "/api/document") {
     const requestedPath = requestUrl.searchParams.get("path") || "";
-    const filePath = safeResolve(docsDir, requestedPath);
+    let filePath;
+    try { filePath = safeResolve(docsDir, requestedPath); } catch (error) { return jsonResponse(response, 400, { error: "无效文档路径" }, { request, cacheControl: "no-store" }); }
     if (!/\.(md|markdown)$/i.test(filePath)) return jsonResponse(response, 400, { error: "只支持 Markdown 文档" });
     const { documents } = await loadIndex(docsDir);
     const document = documents.find((item) => item.path === normalizeRelative(requestedPath));
     if (!document) return jsonResponse(response, 404, { error: "文档不存在" });
-    return jsonResponse(response, 200, publicDocument(document, config));
+    return jsonResponse(response, 200, publicDocument(document, config), { request });
   }
 
   if (requestUrl.pathname === "/api/search") {
+    const query = requestUrl.searchParams.get("q") || "";
+    if (query.length > MAX_SEARCH_QUERY_LENGTH) return jsonResponse(response, 400, { error: "搜索关键词过长" }, { request, cacheControl: "no-store" });
     const { documents } = await loadIndex(docsDir);
-    return jsonResponse(response, 200, { query: requestUrl.searchParams.get("q") || "", results: makeSearchResults(documents, requestUrl.searchParams.get("q") || "", config) });
+    return jsonResponse(response, 200, { query, results: makeSearchResults(documents, query, config) }, { request });
   }
 
   if (requestUrl.pathname === "/api/asset") {
     const requestedPath = requestUrl.searchParams.get("path") || "";
-    const filePath = safeResolve(docsDir, requestedPath);
-    if (/\.(md|markdown)$/i.test(filePath)) return jsonResponse(response, 403, { error: "不允许读取 Markdown 原文" });
-    return sendFile(response, filePath);
+    if (/\.(md|markdown)$/i.test(requestedPath)) return jsonResponse(response, 403, { error: "不允许读取 Markdown 原文" }, { request, cacheControl: "no-store" });
+    if (!assets.isPublicAssetPath(requestedPath)) return jsonResponse(response, 404, { error: "资源不存在" }, { request, cacheControl: "no-store" });
+    let filePath;
+    try {
+      filePath = await resolveExistingFile(docsDir, requestedPath);
+    } catch (error) {
+      if (error.statusCode) return jsonResponse(response, error.statusCode, { error: error.publicMessage }, { request, cacheControl: "no-store" });
+      return jsonResponse(response, 404, { error: "资源不存在" }, { request, cacheControl: "no-store" });
+    }
+    return assets.sendFile(response, filePath, { request, maxBytes: assets.assetMaxBytes(requestedPath), cacheControl: "public, max-age=300, must-revalidate" });
+  }
+
+  if (requestUrl.pathname === "/api/download") {
+    const requestedPath = requestUrl.searchParams.get("path") || "";
+    if (/\.(md|markdown)$/i.test(requestedPath)) return jsonResponse(response, 403, { error: "不允许下载 Markdown 原文" }, { request, cacheControl: "no-store" });
+    if (!assets.isPublicAssetPath(requestedPath)) return jsonResponse(response, 404, { error: "资源不存在" }, { request, cacheControl: "no-store" });
+    let filePath;
+    try {
+      filePath = await resolveExistingFile(docsDir, requestedPath);
+    } catch (error) {
+      if (error.statusCode) return jsonResponse(response, error.statusCode, { error: error.publicMessage }, { request, cacheControl: "no-store" });
+      return jsonResponse(response, 404, { error: "资源不存在" }, { request, cacheControl: "no-store" });
+    }
+    return assets.sendFile(response, filePath, { request, maxBytes: assets.assetMaxBytes(requestedPath), cacheControl: "private, no-cache, must-revalidate", contentDisposition: "attachment" });
   }
 
   if (requestUrl.pathname.startsWith("/api/")) return jsonResponse(response, 404, { error: "接口不存在" });
 
-  const pathname = requestUrl.pathname === "/" ? "/index.html" : requestUrl.pathname;
+  if (requestUrl.pathname === "/" || requestUrl.pathname === "/index.html") {
+    const index = await loadIndex(docsDir);
+    const requestedPath = normalizeRelative(requestUrl.searchParams.get("doc") || "");
+    const selected = requestedPath ? index.documents.find((document) => document.path === requestedPath) : preferredDocument(index.documents);
+    const templatePath = await resolveExistingFile(rootDir, "index.html");
+    const template = await fsp.readFile(templatePath, "utf8");
+    const documentData = selected ? publicDocument(selected, config) : null;
+    const status = requestedPath && !selected ? 404 : 200;
+    return sendBody(response, status, renderPage(template, config, documentData, pageUrlFor(requestUrl, requestedPath)), { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+  }
+
+  if (requestUrl.pathname === "/robots.txt") return sendBody(response, 200, renderRobots(config, requestUrl.origin), { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+  if (requestUrl.pathname === "/sitemap.xml") {
+    const { documents } = await loadIndex(docsDir);
+    return sendBody(response, 200, renderSitemap(documents, requestUrl.origin), { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+  }
+
+  const vendorPath = assets.vendorResourcePath(requestUrl.pathname);
+  if (!STATIC_RESOURCE_PATHS.has(requestUrl.pathname) && !vendorPath) return jsonResponse(response, 404, { error: "页面不存在" }, { request, cacheControl: "no-store" });
   let staticPath;
-  try { staticPath = safeResolve(rootDir, pathname); } catch (error) { return jsonResponse(response, 400, { error: error.message }); }
-  if (staticPath.startsWith(docsDir)) return jsonResponse(response, 403, { error: "禁止访问" });
-  try { return await sendFile(response, staticPath); } catch (error) {
-    if (error.code === "ENOENT") return sendFile(response, path.join(rootDir, "index.html"));
+  try { staticPath = await resolveExistingFile(rootDir, vendorPath || requestUrl.pathname.slice(1)); } catch (error) {
+    if (error.statusCode) return jsonResponse(response, error.statusCode, { error: error.publicMessage }, { request, cacheControl: "no-store" });
     throw error;
   }
+  const relativeStaticPath = vendorPath || requestUrl.pathname.slice(1);
+  const isSkillArchive = relativeStaticPath === SKILL_ARCHIVE_PATH;
+  return assets.sendFile(response, staticPath, {
+    request,
+    maxBytes: isSkillArchive ? MAX_DOWNLOAD_BYTES : MAX_ASSET_BYTES,
+    cacheControl: "public, max-age=3600, must-revalidate",
+    ...(isSkillArchive ? { contentDisposition: "attachment" } : {})
+  });
 }
 
 function createServer(options = {}) {
   const requestHandler = options.handleRequest || ((request, response) => handleRequest(request, response, options));
   return http.createServer((request, response) => {
-    requestHandler(request, response).catch((error) => {
-      console.error(error);
-      if (!response.headersSent) jsonResponse(response, 500, { error: error.message || "服务器错误" });
+    Promise.resolve().then(() => requestHandler(request, response)).catch((error) => {
+      if (error.statusCode >= 500 || !error.statusCode) console.error(error);
+      if (!response.headersSent) {
+        const status = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+        const message = error.publicMessage || (status >= 500 ? "服务器内部错误" : "请求无法处理");
+        jsonResponse(response, status, { error: message }, { request, cacheControl: "no-store" });
+      }
       else response.end();
     });
   });
 }
 
+function closeDocumentIndexWatchers() {
+  for (const state of documentIndexCache.values()) {
+    for (const watcher of state.watchers.values()) watcher.close();
+    state.watchers.clear();
+  }
+}
+
 function startServer() {
-  const server = createServer();
-  // 容器通过 HOST=0.0.0.0 监听所有网卡，本地开发仍默认只绑定回环地址。
-  server.listen(port, host, () => {
-    console.log(`Docs site running at http://${host}:${port}`);
-    console.log(`Markdown directory: ${resolveFromRoot(cliArgs.docsDir || process.env.DOCS_DIR || "docs")}`);
-  });
-  return server;
+  return startServerRuntime({ createServer, closeDocumentIndexWatchers, port, host, cliArgs, resolveFromRoot });
 }
 
 if (require.main === module) startServer();
 
 module.exports = {
   DEFAULT_CONFIG,
+  MAX_SEARCH_QUERY_LENGTH,
+  MAX_MARKDOWN_BYTES,
+  MAX_ASSET_BYTES,
+  MAX_MEDIA_BYTES,
+  MAX_DOWNLOAD_BYTES,
+  INDEX_POLL_INTERVAL_MS,
   parseArgs,
   mergeConfig,
   resolveFromRoot,
@@ -933,6 +890,9 @@ module.exports = {
   loadConfig,
   normalizeRelative,
   safeResolve,
+  assertNoSymlink,
+  resolveExistingFile,
+  isPublicAssetPath: assets.isPublicAssetPath,
   toPosix,
   parseValue,
   splitFrontMatter,
@@ -949,6 +909,7 @@ module.exports = {
   strategyIconColors,
   resolveIcon,
   scanDocuments,
+  scanFilesystemSignature,
   createDocumentIndexState,
   markDocumentIndexDirty,
   syncDirectoryWatchers,
@@ -956,14 +917,22 @@ module.exports = {
   sortNodes,
   createTree,
   renderInline,
+  parseMarkdown,
   renderMarkdown,
   documentIcon,
   publicDocument,
   makeSearchSnippet,
   makeSearchResults,
+  publicConfig,
+  renderPage,
+  renderRobots,
+  renderSitemap,
+  assetMaxBytes: assets.assetMaxBytes,
+  parseByteRange: assets.parseByteRange,
   jsonResponse,
-  sendFile,
+  sendFile: assets.sendFile,
   handleRequest,
   createServer,
+  closeDocumentIndexWatchers,
   startServer
 };

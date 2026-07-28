@@ -40,6 +40,32 @@ icon: settings
 }
 ```
 
+## Markdown 代码块
+
+代码块通过服务端 `highlight.js` 处理常见语言，并在页面中显示复制按钮。默认配置如下：
+
+```json
+{
+  "markdown": {
+    "code": {
+      "highlight": true,
+      "lineNumbers": true,
+      "copy": true,
+      "wrap": false
+    }
+  }
+}
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `markdown.code.highlight` | boolean | `true` | 是否启用服务端语法高亮；未知语言或高亮失败时回退为转义纯文本。 |
+| `markdown.code.lineNumbers` | boolean | `true` | 是否显示行号。行号使用独立 gutter，不会破坏跨行的高亮 token。 |
+| `markdown.code.copy` | boolean | `true` | 是否在代码块顶部显示复制按钮。 |
+| `markdown.code.wrap` | boolean | `false` | 是否让长代码自动换行；关闭时保留横向滚动。 |
+
+配置值必须是布尔值，其他类型会回退到默认值。代码围栏中的语言名称仍决定高亮语言，例如 `javascript`；不支持的语言只显示转义后的原文。
+
 ## 侧边栏排序、图标和展开
 
 `sidebar.sort` 支持 `createdAt` 和 `locale`，默认是 `createdAt`。同级节点先比较 front matter 的 `order`；`order` 相同时目录排在文件前面；只有顺序和类型都相同，才使用全局排序方式。`createdAt` 使用文件系统创建时间，无法取得时依次回退到变更时间和修改时间；`locale` 按中文本地化、数字感知且不区分大小写的标题排序。

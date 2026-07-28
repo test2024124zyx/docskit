@@ -12,8 +12,36 @@ env:
   IMAGE_NAME: ${{ vars.DOCKERHUB_REPOSITORY }}
 
 jobs:
+  test:
+    name: Test and validate
+    runs-on: ubuntu-latest
+
+    steps:
+      # 发布镜像前先在干净环境执行构建校验、单测和依赖安全检查。
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build validation
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
   publish:
     name: Build and publish
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
@@ -59,7 +87,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

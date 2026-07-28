@@ -44,6 +44,14 @@
     "search": true,
     "themeToggle": true
   },
+  "markdown": {
+    "code": {
+      "highlight": true,
+      "lineNumbers": true,
+      "copy": true,
+      "wrap": false
+    }
+  },
   "sidebar": {
     "sort": "createdAt",
     "iconStrategy": "modern",
