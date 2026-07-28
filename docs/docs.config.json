@@ -37,6 +37,7 @@
     "links": [
       { "label": "开始使用", "path": "getting-started/installation.md", "icon": "rocket" },
       { "label": "编写文档", "path": "guides/writing-docs.md", "icon": "pencil-line" },
+      { "label": "GitHub", "href": "https://github.com/test2024124zyx/docskit", "icon": "github", "external": true },
       { "label": "智能体", "href": "https://chat.mymyjd.com", "icon": "sparkles", "external": true },
       { "label": "免费 AI", "href": "https://aiapi.mymyjd.cn", "icon": "zap", "external": true },
       { "label": "免费代理", "href": "https://proxy.mymyjd.com", "icon": "globe-2", "external": true }

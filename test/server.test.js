@@ -157,6 +157,16 @@ test("README 和配置文档列出全部内置图标", async () => {
   ICON_NAMES.forEach((name) => assert.equal(documents[1].includes(`:icon[${name}]`), true, `配置文档缺少图标预览 ${name}`));
 });
 
+test("官方文档导航包含项目 GitHub 仓库", async () => {
+  const config = JSON.parse(await fsp.readFile(path.join(PROJECT_DIR, "docs", "docs.config.json"), "utf8"));
+  assert.deepEqual(config.topbar.links.find((link) => link.icon === "github"), {
+    label: "GitHub",
+    href: "https://github.com/test2024124zyx/docskit",
+    icon: "github",
+    external: true
+  });
+});
+
 test("配置、全文搜索和并发请求正常工作", async () => {
   await withServer({
     config: {

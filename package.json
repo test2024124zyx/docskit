@@ -1,6 +1,6 @@
 {
   "name": "markdown-docs-site",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "A configurable Markdown documentation site",
   "scripts": {
