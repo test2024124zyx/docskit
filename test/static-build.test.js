@@ -127,6 +127,7 @@ test("静态构建生成独立页面、离线数据、资源和安全头", async
     assert.doesNotMatch(documentJson, /(?:href|src)="\/api\/(?:bootstrap|document|search|asset|download)/);
     assert.match(installGuide, /docskit-doc-writing\.zip/);
     assert.equal(skillArchive.subarray(0, 2).toString(), "PK");
+    assert.match(skillArchive.toString("latin1"), /docskit-doc-writing\/SKILL\.md/);
     assert.doesNotMatch(indexHtml, /<\/script><script>alert/);
     assert.ok(indexHtml.includes("\\u003c测试\\u003e"));
     assert.match(guideHtml, /href="\/docs\/styles\.css"/);

@@ -699,7 +699,7 @@ test("资源接口支持附件下载、音视频 MIME 和 Range 分片请求", a
 test("根目录公开 skill 安装说明并以附件方式提供 skill 压缩包", async () => {
   await withTempDir(async (root) => {
     await writeFixture(root, "skills/install.md", "# 安装 DocsKit skill\n");
-    await writeFixture(root, "docskit-doc-writing.zip", "PK\\x03\\x04");
+    await writeFixture(root, "skills/docskit-doc-writing/SKILL.md", "---\nname: docskit-doc-writing\ndescription: 测试\n---\n");
     const config = mergeConfig({});
     await withHttpServer({ rootDir: root, loadConfig: async () => ({ config, docsDir: root }) }, async (baseUrl) => {
       const install = await request(baseUrl, "/skills/install.md");
@@ -711,6 +711,7 @@ test("根目录公开 skill 安装说明并以附件方式提供 skill 压缩包
       assert.equal(archive.response.status, 200);
       assert.equal(archive.response.headers.get("content-type"), "application/zip");
       assert.match(archive.response.headers.get("content-disposition"), /^attachment;/);
+      assert.ok(Number(archive.response.headers.get("content-length")) > 0);
     });
   });
 });

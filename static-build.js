@@ -6,6 +6,7 @@ const {
   ROOT_DIR,
   DEFAULT_DOCS_DIR,
   CONFIG_FILE_NAME,
+  SKILL_ARCHIVE_PATH,
   PUBLIC_ROOT_FILES,
   mergeConfig,
   readConfigFile,
@@ -23,6 +24,7 @@ const {
   renderSitemap,
   normalizeRelative
 } = require("./server");
+const { writeSkillArchive } = require("./skill-archive");
 
 const PROJECT_TEMPLATE_PATH = path.join(ROOT_DIR, "index.html");
 const STATIC_HEADERS = [
@@ -180,10 +182,10 @@ async function copyProjectRuntime(outputDir) {
 
 async function copyPublicRootFiles(outputDir) {
   for (const relativePath of PUBLIC_ROOT_FILES) {
-    const sourcePath = path.join(ROOT_DIR, ...relativePath.split("/"));
     const targetPath = path.join(outputDir, ...relativePath.split("/"));
     await fsp.mkdir(path.dirname(targetPath), { recursive: true });
-    await fsp.copyFile(sourcePath, targetPath);
+    if (relativePath === SKILL_ARCHIVE_PATH) await writeSkillArchive(targetPath);
+    else await fsp.copyFile(path.join(ROOT_DIR, ...relativePath.split("/")), targetPath);
   }
   return PUBLIC_ROOT_FILES.length;
 }

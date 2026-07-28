@@ -7,6 +7,8 @@ test
 skills/*
 !skills/
 !skills/install.md
+!skills/docskit-doc-writing/
+!skills/docskit-doc-writing/**
 npm-debug.log*
 .chrome-*
 .docs-*.png

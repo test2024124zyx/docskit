@@ -184,6 +184,7 @@ module.exports = {
   vendorResourcePath,
   isPublicAssetPath,
   responseHeaders,
+  contentDisposition,
   parseByteRange,
   sendFile,
   assetMaxBytes

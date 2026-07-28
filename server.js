@@ -7,6 +7,7 @@ const markdown = require("./markdown");
 const { startServer: startServerRuntime } = require("./server-lifecycle");
 const { createHttpError, assertNoSymlink, resolveExistingFile } = require("./server-filesystem");
 const assets = require("./server-assets");
+const { createSkillArchive } = require("./skill-archive");
 
 const {
   escapeHtml,
@@ -831,6 +832,15 @@ async function handleRequest(request, response, options = {}) {
     return sendBody(response, 200, renderSitemap(documents, requestUrl.origin), { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
   }
 
+  if (requestUrl.pathname === `/${SKILL_ARCHIVE_PATH}`) {
+    const archive = await createSkillArchive(rootDir);
+    return sendBody(response, 200, archive, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": assets.contentDisposition(SKILL_ARCHIVE_PATH, "attachment"),
+      "Cache-Control": "public, max-age=3600, must-revalidate"
+    }, { request });
+  }
+
   const vendorPath = assets.vendorResourcePath(requestUrl.pathname);
   if (!STATIC_RESOURCE_PATHS.has(requestUrl.pathname) && !vendorPath) return jsonResponse(response, 404, { error: "页面不存在" }, { request, cacheControl: "no-store" });
   let staticPath;
@@ -838,13 +848,10 @@ async function handleRequest(request, response, options = {}) {
     if (error.statusCode) return jsonResponse(response, error.statusCode, { error: error.publicMessage }, { request, cacheControl: "no-store" });
     throw error;
   }
-  const relativeStaticPath = vendorPath || requestUrl.pathname.slice(1);
-  const isSkillArchive = relativeStaticPath === SKILL_ARCHIVE_PATH;
   return assets.sendFile(response, staticPath, {
     request,
-    maxBytes: isSkillArchive ? MAX_DOWNLOAD_BYTES : MAX_ASSET_BYTES,
-    cacheControl: "public, max-age=3600, must-revalidate",
-    ...(isSkillArchive ? { contentDisposition: "attachment" } : {})
+    maxBytes: MAX_ASSET_BYTES,
+    cacheControl: "public, max-age=3600, must-revalidate"
   });
 }
 

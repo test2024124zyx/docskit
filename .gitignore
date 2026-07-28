@@ -1,3 +1,4 @@
 # 忽略本地安装的 Node.js 依赖。
 node_modules/
 dist/
+docskit-doc-writing.zip
