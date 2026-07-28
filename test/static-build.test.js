@@ -118,6 +118,9 @@ test("静态构建生成独立页面、离线数据、资源和安全头", async
     assert.match(indexHtml, /href="\/docs\/styles\.css"/);
     assert.match(indexHtml, /href="\/docs\/vendor\/katex\/katex\.min\.css"/);
     assert.match(indexHtml, /src="\/docs\/script\.js"/);
+    const staticDataPosition = indexHtml.indexOf('<script id="docskit-static-data"');
+    const runtimeScriptPosition = indexHtml.indexOf('<script src="/docs/script.js"');
+    assert.ok(staticDataPosition >= 0 && staticDataPosition < runtimeScriptPosition, "静态数据必须先于运行时脚本注入");
     assert.match(indexHtml, /href="\/docs\/guide\/intro\.html"/);
     assert.match(indexHtml, /src="\/docs\/assets\/assets\/demo\.png"/);
     assert.doesNotMatch(indexHtml, /(?:href|src)="\/docs\/api\/(?:bootstrap|document|search|asset|download)/);

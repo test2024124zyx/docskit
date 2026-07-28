@@ -670,7 +670,10 @@ function renderPage(template, config, documentData, pageUrl, options = {}) {
   html = html.replace(/<article\s+class="doc-article"\s+id="doc-content"\s+aria-live="polite">[\s\S]*?<\/article>/i, `<article class="doc-article" id="doc-content" aria-live="polite">${content}</article>`);
   if (Object.prototype.hasOwnProperty.call(options, "staticData")) {
     const staticData = `<script id="docskit-static-data" type="application/json">${serializeInlineJson(options.staticData)}</script>`;
-    html = html.replace(/<\/body>/i, `${staticData}</body>`);
+    // 静态数据必须先于运行时脚本出现，浏览器解析脚本时才能直接进入离线模式。
+    const runtimeScriptPattern = /<script\s+src="[^"]*script\.js"[^>]*><\/script>/i;
+    if (runtimeScriptPattern.test(html)) html = html.replace(runtimeScriptPattern, (runtimeScript) => `${staticData}${runtimeScript}`);
+    else html = html.replace(/<\/body>/i, `${staticData}</body>`);
   }
   return html;
 }
