@@ -270,8 +270,7 @@ npm run dev
 
 服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求会共享同一次重建，不会重复读取全部 Markdown 文件。
 
-
-docker部署：
+## Docker 部署
 
 ```bash
 docker run --rm -p 3000:3000 zhuhanxin/docskit
@@ -287,3 +286,45 @@ docker run --rm -p 3000:3000 \
 ```
 
 挂载后，修改宿主机 `docs/` 下的 Markdown 文件、目录结构或 `docs.config.json`，刷新浏览器即可看到变化。健康检查地址为 <http://127.0.0.1:3000/healthz>。
+
+## Docker Compose 部署
+
+在项目根目录创建 `docker-compose.yml`：
+
+```yaml
+services:
+  docskit:
+    image: zhuhanxin/docskit:latest
+    container_name: docskit
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./docs:/app/docs
+```
+
+启动服务并查看状态：
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+启动后访问 <http://127.0.0.1:3000>。Compose 会沿用镜像内置的健康检查；日志可以通过以下命令查看：
+
+```bash
+docker compose logs -f docskit
+```
+
+修改宿主机 `docs/` 下的 Markdown 文件、目录结构或 `docs.config.json` 后，刷新浏览器即可看到变化。停止并删除容器：
+
+```bash
+docker compose down
+```
+
+更新到镜像最新版本：
+
+```bash
+docker compose pull
+docker compose up -d
+```
