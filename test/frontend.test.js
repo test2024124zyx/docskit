@@ -292,6 +292,33 @@ test("前端菜单收缩会归零高度并递归刷新父级，手风琴只折�
   }
 });
 
+test("前端嵌套目录过渡完成后会刷新父级高度", async () => {
+  const mounted = await mountFrontend({ config: baseConfig, tree: baseTree(), documents: [], defaultPath: "guide/intro.md", documentData: baseDocument() });
+  try {
+    const guide = findGroup(mounted.document, "guide");
+    const nested = findGroup(mounted.document, "guide/nested");
+    const nestedHeading = nested.querySelector(":scope > .side-nav__heading");
+    const nestedChildren = nested.querySelector(":scope > .side-nav__children");
+    const guideChildren = guide.querySelector(":scope > .side-nav__children");
+    let guideHeight = 120;
+    Object.defineProperty(guideChildren, "scrollHeight", { configurable: true, get: () => guideHeight });
+    setScrollHeight(nestedChildren, 80);
+
+    nestedHeading.click();
+    assert.equal(guideChildren.style.maxHeight, "120px");
+    nestedHeading.click();
+    assert.equal(guideChildren.style.maxHeight, "120px");
+
+    guideHeight = 180;
+    const transitionEnd = new mounted.window.Event("transitionend", { bubbles: true });
+    Object.defineProperty(transitionEnd, "propertyName", { value: "max-height" });
+    nestedChildren.dispatchEvent(transitionEnd);
+    assert.equal(guideChildren.style.maxHeight, "180px");
+  } finally {
+    mounted.cleanup();
+  }
+});
+
 test("前端渲染站点品牌、SEO、页脚、图标和常用交互", async () => {
   const config = {
     ...baseConfig,

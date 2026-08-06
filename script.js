@@ -443,6 +443,19 @@
     if (parentGroup) refreshNavHeight(parentGroup);
   }
 
+  // 子菜单完成高度过渡后再次刷新父级，避免父级停留在过渡开始前的高度。
+  function bindNavTransitionRefresh() {
+    document.querySelectorAll("#sidebar-nav .side-nav__children").forEach((children) => {
+      const refreshParent = (event) => {
+        if (event.target !== children || event.propertyName !== "max-height") return;
+        const group = children.parentElement?.closest(".side-nav__group");
+        if (group) refreshNavHeight(group);
+      };
+      children.addEventListener("transitionend", refreshParent);
+      children.addEventListener("transitioncancel", refreshParent);
+    });
+  }
+
   function setGroupExpanded(group, expanded) {
     const heading = group.querySelector(":scope > .side-nav__heading");
     const children = group.querySelector(":scope > .side-nav__children");
@@ -527,6 +540,7 @@
       nav.innerHTML = '<div class="nav-empty">文档目录中还没有 Markdown 文件</div>';
     } else {
       renderSideNodes(state.tree, nav, 0);
+      bindNavTransitionRefresh();
     }
     const indent = Number(sidebarConfig().indent);
     nav.style.setProperty("--nav-indent", `${Number.isFinite(indent) ? Math.max(0, indent) : DEFAULT_NAV_INDENT}px`);
