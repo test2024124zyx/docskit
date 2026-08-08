@@ -15,6 +15,7 @@
     tocScrollTarget: "",
     tocScrollRequestId: 0,
     mermaidPromise: null,
+    hljsPromise: null,
     staticSearchPromise: null,
     documentRequestId: 0,
     documentAbortController: null,
@@ -334,6 +335,59 @@
       }
     });
     footer.hidden = footer.children.length === 0;
+  }
+
+  // 应用主题色 CSS 变量
+  function applyThemeColor(themeColor) {
+    if (!themeColor) return;
+    const style = document.getElementById("theme-color-vars");
+    if (style) {
+      // 服务端已注入，跳过
+      return;
+    }
+    // 客户端动态应用主题色
+    const rgb = hexToRgb(themeColor);
+    if (!rgb) return;
+    const accent = themeColor;
+    const darkRgb = mixColors(rgb, { r: 0, g: 0, b: 0 }, 0.8);
+    const accentDark = rgbToHex(darkRgb.r, darkRgb.g, darkRgb.b);
+    const softRgb = mixColors({ r: 255, g: 255, b: 255 }, rgb, 0.9);
+    const accentSoft = rgbToHex(softRgb.r, softRgb.g, softRgb.b);
+    const paleRgb = mixColors({ r: 255, g: 255, b: 255 }, rgb, 0.95);
+    const accentPale = rgbToHex(paleRgb.r, paleRgb.g, paleRgb.b);
+    
+    const styleEl = document.createElement("style");
+    styleEl.id = "theme-color-vars";
+    styleEl.textContent = `:root { --accent: ${accent}; --accent-dark: ${accentDark}; --accent-soft: ${accentSoft}; --accent-pale: ${accentPale}; }`;
+    document.head.appendChild(styleEl);
+  }
+
+  // 辅助函数：hex 转 RGB
+  function hexToRgb(hex) {
+    let color = String(hex || "").replace(/^#/, "");
+    if (color.length === 3) color = color[0] + color[0] + color[1] + color[1] + color[2] + color[2];
+    if (color.length !== 6) return null;
+    return {
+      r: parseInt(color.slice(0, 2), 16),
+      g: parseInt(color.slice(2, 4), 16),
+      b: parseInt(color.slice(4, 6), 16)
+    };
+  }
+
+  // 辅助函数：RGB 转 hex
+  function rgbToHex(r, g, b) {
+    const toHex = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  }
+
+  // 辅助函数：混合颜色
+  function mixColors(color1, color2, weight) {
+    const w = Math.max(0, Math.min(1, weight));
+    return {
+      r: color1.r * w + color2.r * (1 - w),
+      g: color1.g * w + color2.g * (1 - w),
+      b: color1.b * w + color2.b * (1 - w)
+    };
   }
 
   function renderBrand() {
@@ -661,6 +715,11 @@
         setGroupExpanded(group, true);
       }
     });
+    const activeLink = Array.from(document.querySelectorAll(".side-nav__link[data-doc-path]"))
+      .find((link) => link.dataset.docPath === pathValue);
+    if (activeLink && typeof activeLink.scrollIntoView === "function") {
+      window.requestAnimationFrame(() => activeLink.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    }
   }
 
   // 文档中的图标标记复用导航图标注册表，避免维护第二份 SVG 路径。
@@ -704,6 +763,50 @@
     });
   }
 
+  // 懒高亮：加载 highlight.js 并对超过 100 行的代码块进行客户端语法高亮。
+  function loadHighlightJs() {
+    if (window.hljs) return Promise.resolve(window.hljs);
+    if (state.hljsPromise) return state.hljsPromise;
+    state.hljsPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = staticBuildData() ? staticUrl("vendor/highlight.min.js") : "/vendor/highlight.min.js";
+      script.onload = () => window.hljs ? resolve(window.hljs) : reject(new Error("highlight.js 加载失败"));
+      script.onerror = () => reject(new Error("highlight.js 加载失败"));
+      document.head.appendChild(script);
+    }).catch((error) => {
+      state.hljsPromise = null;
+      throw error;
+    });
+    return state.hljsPromise;
+  }
+
+  function highlightCodeBlocks(container) {
+    const lazyBlocks = Array.from(container.querySelectorAll("[data-lazy-highlight]"));
+    if (!lazyBlocks.length) return;
+    // 使用 requestIdleCallback 或 setTimeout 延迟执行，不阻塞首次渲染。
+    const scheduleIdle = window.requestIdleCallback || ((cb) => setTimeout(cb, 16));
+    scheduleIdle(() => {
+      loadHighlightJs().then((hljs) => {
+        lazyBlocks.forEach((block) => {
+          const language = block.dataset.lazyHighlight;
+          const codeEl = block.querySelector("code.markdown-code__content");
+          if (!codeEl) return;
+          try {
+            const normalizedLang = String(language || "").toLowerCase();
+            if (!["code", "plain", "text", "txt"].includes(normalizedLang) && hljs.getLanguage(normalizedLang)) {
+              const result = hljs.highlight(codeEl.textContent, { language: normalizedLang, ignoreIllegals: true });
+              // 保持行结构：对高亮后的 HTML 按行分割并重新包裹 span。
+              const lines = result.value.split("\n");
+              codeEl.innerHTML = lines.map((line) => `<span class="markdown-code__line">${line || " "}</span>`).join("\n");
+              codeEl.classList.add("hljs");
+            }
+          } catch (error) { /* 高亮失败时保留原始文本 */ }
+          block.removeAttribute("data-lazy-highlight");
+        });
+      }).catch(() => { /* highlight.js 加载失败，保留纯文本 */ });
+    });
+  }
+
   function renderDocument(documentData) {
     state.currentDocument = documentData;
     renderBreadcrumb(documentData);
@@ -713,6 +816,7 @@
     article.innerHTML = `<section class="doc-section markdown-section" id="doc-page" data-title="${escapeHtml(documentData.title)}"><div class="section-kicker"><span class="kicker-line"></span>${escapeHtml(category)}</div>${hasH1 ? "" : `<h1 class="doc-title">${escapeHtml(documentData.title)}</h1>${documentData.description ? `<p class="lead doc-description">${escapeHtml(documentData.description)}</p>` : ""}`}<div class="doc-meta"><span>${escapeHtml(documentData.path)}</span><span>·</span><span>更新于 ${new Date(documentData.updatedAt).toLocaleDateString("zh-CN")}</span></div><div class="markdown-body">${documentData.html}</div></section>`;
     renderMarkdownIcons(article);
     renderMermaid(article);
+    highlightCodeBlocks(article);
     renderToc(documentData.headings);
     setActiveNav(documentData.path);
     observeHeadings();
@@ -1018,6 +1122,20 @@
           throw new Error("静态页面数据损坏");
         }
         state.staticBuild = payload.staticBuild || null;
+        if (!Array.isArray(payload.tree) || !Array.isArray(payload.documents)) {
+          const bootstrapPath = state.staticBuild?.bootstrapUrl || "bootstrap.json";
+          const bootstrapPayload = await requestJson(staticUrl(bootstrapPath));
+          const pageBuild = state.staticBuild || {};
+          state.staticBuild = { ...(bootstrapPayload.staticBuild || {}), ...pageBuild };
+          payload = {
+            ...bootstrapPayload,
+            ...payload,
+            config: payload.config || bootstrapPayload.config,
+            tree: Array.isArray(payload.tree) ? payload.tree : bootstrapPayload.tree,
+            documents: Array.isArray(payload.documents) ? payload.documents : bootstrapPayload.documents,
+            defaultPath: payload.defaultPath || bootstrapPayload.defaultPath
+          };
+        }
       } else {
         payload = await requestJson("/api/bootstrap");
       }
@@ -1025,6 +1143,7 @@
       state.tree = payload.tree || [];
       state.documents = payload.documents || [];
       state.defaultPath = payload.defaultPath || "";
+      applyThemeColor(state.config.site?.themeColor);
       renderBrand();
       renderTopbar();
       renderSidebar();

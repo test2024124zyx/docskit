@@ -26,7 +26,7 @@ function replaceGlobal(name, value, previous) {
   global[name] = value;
 }
 
-async function mountFrontend({ config, tree, documents, defaultPath, documentData, searchResults = [], fetchMode = "normal", omitCanonical = false, omitHeadMetadata = false, disableAbortController = false, staticPayload = null, staticDocuments = {} }) {
+async function mountFrontend({ config, tree, documents, defaultPath, documentData, searchResults = [], fetchMode = "normal", omitCanonical = false, omitHeadMetadata = false, disableAbortController = false, staticPayload = null, staticDocuments = {}, staticBootstrap = null }) {
   let initialHtml = HTML;
   if (omitCanonical || omitHeadMetadata) initialHtml = initialHtml.replace(/\s*<link rel="canonical" href="" \/>/, "");
   if (omitHeadMetadata) initialHtml = initialHtml.replace(/^\s*<meta (?:name|property)="(?:description|keywords|author|robots|theme-color|og:[^"]+|twitter:[^"]+)"[^>]*\/>\s*$/gm, "");
@@ -45,6 +45,7 @@ async function mountFrontend({ config, tree, documents, defaultPath, documentDat
     const url = new URL(endpoint, window.location.href);
     if (staticPayload) {
       if (url.pathname === `${normalizedStaticBase}search-index.json`) return { documents: searchResults };
+      if (url.pathname === `${normalizedStaticBase}bootstrap.json`) return staticBootstrap || { config, tree, documents, defaultPath };
       const dataPrefix = `${normalizedStaticBase}data/documents/`;
       if (url.pathname.startsWith(dataPrefix)) {
         const pathValue = decodeURIComponent(url.pathname.slice(dataPrefix.length)).replace(/\.json$/i, "");
@@ -227,9 +228,41 @@ test("前端静态模式使用构建数据、静态文档 JSON 和离线搜索",
   }
 });
 
+test("前端静态模式从共享 Bootstrap 加载导航数据", async () => {
+  const currentDocument = baseDocument("guide/intro.md");
+  const sharedBootstrap = {
+    staticBuild: {
+      base: "/docs/",
+      documentUrls: { "guide/intro.md": "/docs/guide/intro.html" },
+      routeDocuments: { "/docs/": "guide/intro.md", "/docs/guide/intro.html": "guide/intro.md" }
+    },
+    config: baseConfig,
+    tree: baseTree(),
+    documents: [{ path: currentDocument.path, title: currentDocument.title, icon: currentDocument.icon }],
+    defaultPath: currentDocument.path
+  };
+  const mounted = await mountFrontend({
+    config: {},
+    tree: [],
+    documents: [],
+    defaultPath: "",
+    documentData: null,
+    staticPayload: { staticBuild: { base: "/docs/", bootstrapUrl: "bootstrap.json" }, currentDocument },
+    staticBootstrap: sharedBootstrap
+  });
+  try {
+    assert.equal(mounted.document.querySelector("#doc-page").dataset.title, currentDocument.title);
+    assert.ok(mounted.requests.some((endpoint) => endpoint.includes("/docs/bootstrap.json")));
+    assert.equal(mounted.document.querySelectorAll(".side-nav__group").length, 3);
+  } finally {
+    mounted.cleanup();
+  }
+});
+
 test("前端菜单收缩会归零高度并递归刷新父级，手风琴只折叠同级目录", async () => {
   const mounted = await mountFrontend({ config: baseConfig, tree: baseTree(), documents: [], defaultPath: "guide/intro.md", documentData: baseDocument() });
   try {
+    assert.ok(mounted.window.__scrollIntoViewCalls.some((call) => call.options?.block === "nearest"));
     const guide = findGroup(mounted.document, "guide");
     const nested = findGroup(mounted.document, "guide/nested");
     const guideHeading = guide.querySelector(":scope > .side-nav__heading");

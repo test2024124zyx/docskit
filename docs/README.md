@@ -101,123 +101,9 @@ npm run build -- --docs ./my-docs --out ./dist --base /docs/ --site-url https://
 
 ## 配置
 
-站点配置文件是 `docs/docs.config.json`。配置文件会按文件变更缓存，修改后刷新页面即可生效。
+站点配置文件是 `docs/docs.config.json`，用于配置站点品牌、主题色、SEO、导航、侧边栏图标等。配置文件不是必需的，缺失时会使用默认值。
 
-配置文件不是必需的。文件不存在、JSON 无效或只提供部分字段时，服务会使用默认配置继续运行：顶部自定义导航为空，未指定图标的文件和目录会按路径稳定选择内置图标。
-
-### 站点和顶部导航
-
-```json
-{
-  "site": {
-    "brand": { "name": "docs", "accent": "kit" },
-    "context": "知识库",
-    "title": "我的文档",
-    "logo": "assets/logo.png",
-    "favicon": "assets/favicon.ico",
-    "seo": {
-      "title": "我的文档",
-      "description": "默认 SEO 描述",
-      "keywords": ["文档", "Markdown"],
-      "author": "",
-      "robots": "index,follow",
-      "canonical": "",
-      "themeColor": ""
-    },
-    "footer": {
-      "copyright": "© 2026 我的文档",
-      "icp": "ICP备案号",
-      "beian": "公安备案号",
-      "links": [
-        { "label": "智能体", "href": "https://chat.mymyjd.com", "external": true },
-        { "label": "免费 AI", "href": "https://aiapi.mymyjd.cn", "external": true },
-        { "label": "免费代理", "href": "https://proxy.mymyjd.com", "external": true }
-      ]
-    }
-  },
-  "topbar": {
-    "version": "v1.0.1",
-    "search": true,
-    "themeToggle": true,
-    "links": [
-      { "label": "开始使用", "path": "getting-started/installation.md", "icon": "rocket" },
-      { "label": "智能体", "href": "https://chat.mymyjd.com", "external": true, "icon": "sparkles" },
-      { "label": "免费 AI", "href": "https://aiapi.mymyjd.cn", "external": true, "icon": "zap" },
-      { "label": "免费代理", "href": "https://proxy.mymyjd.com", "external": true, "icon": "globe-2" }
-    ]
-  }
-}
-```
-
-顶部导航项目使用 `path` 打开站内文档，使用 `href` 打开外部链接。外部链接可以设置 `external: true`，也会自动识别 `http://` 和 `https://` 地址。
-
-### Markdown 代码块
-
-代码块默认启用服务端语法高亮、行号和复制按钮；可以在 `docs.config.json` 中分别控制：
-
-```json
-{
-  "markdown": {
-    "code": {
-      "highlight": true,
-      "lineNumbers": true,
-      "copy": true,
-      "wrap": false
-    }
-  }
-}
-```
-
-`highlight` 控制语法高亮，未知语言会安全回退为纯文本；`lineNumbers` 控制行号 gutter；`copy` 控制复制按钮；`wrap` 控制长代码是否自动换行。四个字段都只接受布尔值，填入其他类型时恢复默认值。
-
-### 侧边栏图标
-
-```json
-{
-  "sidebar": {
-    "sort": "createdAt",
-    "iconStrategy": "modern",
-    "expandMode": "accordion",
-    "indent": 16,
-    "iconColor": "",
-    "iconPalette": ["#3370ff", "#7c3aed", "#0f9d8a"],
-    "defaultFolderIcon": "folder",
-    "defaultFileIcon": "file-markdown",
-    "icons": {
-      "components": "blocks",
-      "components/button.md": "mouse-pointer-2"
-    }
-  }
-}
-```
-
-`sidebar.sort` 支持 `createdAt` 和 `locale`。`order` 始终优先于全局排序方式；`createdAt` 按文件系统创建时间排序，无法提供创建时间时回退到变更时间；`locale` 按标题进行中文本地排序。
-
-`sidebar.iconStrategy` 支持 `default`、`modern` 和 `mixed`：默认策略让目录显示文件夹图标、Markdown 显示 Markdown 文件图标；现代策略顶级菜单使用稳定随机的多彩图标，子级菜单使用稳定随机的单色图标；混合策略顶级目录固定使用多彩文件夹图标，子级目录固定使用单色文件夹图标，文件按层级使用多彩或单色图标。
-
-`sidebar.icons` 支持目录路径和 Markdown 相对路径，精确文件路径优先于目录路径；`defaultFileIcon`、`defaultFolderIcon` 和 front matter 中的 `icon` 优先于默认策略。`iconPalette` 控制顶级多彩图标的颜色组合，策略会稳定选择最多 3 种颜色生成渐变；`iconColor` 会覆盖所有菜单图标并强制使用单色。`indent` 控制每级导航缩进，单位为像素，范围为 0 到 48。
-
-`expandMode` 只有两个有效值：
-
-| 值 | 是否默认 | 行为 |
-| --- | --- | --- |
-| `all` | 是 | 初始状态展开所有目录；点击目录标题仍可单独收起或展开。 |
-| `accordion` | 否 | 同一层级同时只展开一个目录；展开目录时会收起同级目录，当前文档所在的父级路径会保持展开。 |
-
-未填写、填写空字符串或使用其他值时，服务端会回退为 `all`。
-
-### 内置图标
-
-当前内置 **102** 个图标。配置文件中的 `icon`、`defaultFileIcon`、`defaultFolderIcon` 和 `sidebar.icons` 均可使用以下名称：
-
-| 分类 | 图标名称 |
-| --- | --- |
-| 文档与目录 | `file-text`、`file`、`file-plus`、`file-code`、`file-markdown`、`file-check`、`file-cog`、`file-search`、`file-heart`、`file-warning`、`file-lock`、`folder`、`folder-open`、`folder-plus`、`folder-tree`、`folder-cog`、`folder-search`、`folder-check`、`folder-git-2`、`folder-heart`、`folder-key`、`home`、`bookmark`、`archive`、`package`、`rocket`、`blocks`、`layout-dashboard`、`list`、`table` |
-| 开发与配置 | `book-open`、`code-2`、`terminal`、`braces`、`layers`、`network`、`workflow`、`component`、`brackets`、`binary`、`cpu`、`wrench`、`tool-case`、`settings`、`database`、`server`、`cloud`、`box`、`sliders-horizontal`、`filter`、`search` |
-| 内容与产品 | `mouse-pointer-2`、`pencil-line`、`zap`、`monitor`、`smartphone`、`map`、`megaphone`、`pin`、`history`、`circle-help`、`bookmark-check`、`book-marked`、`newspaper`、`scroll-text`、`notebook-tabs`、`text`、`graduation-cap`、`palette`、`sparkles`、`flag` |
-| 通信与链接 | `github`、`globe-2`、`link`、`download`、`mail`、`message-circle`、`bell`、`user`、`users`、`calendar`、`clock`、`upload` |
-| 状态与媒体 | `check`、`check-circle`、`x-circle`、`info`、`alert-triangle`、`shield-check`、`lock`、`eye`、`star`、`heart`、`tag`、`image`、`copy` |
-| 界面操作 | `sun`、`moon`、`chevron-down`、`chevron-right`、`arrow-right`、`external-link` |
+详细配置说明请参考 [配置文件](api/configuration.md)。
 
 ## Markdown 约定
 
@@ -293,19 +179,9 @@ npm run dev
 服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求会共享同一次重建，不会重复读取全部 Markdown 文件。
 
 
-docker部署：
+## 部署
 
-```bash
-docker run --rm -p 3000:3000 zhuhanxin/docskit
-```
+DocsKit 支持多种方式部署：
 
-上面的命令使用镜像内置的 `docs/` 内容。容器关闭内容就会丢失。
-若希望在容器运行期间编辑宿主机文档和配置持久化文档，可以挂载 `docs/` 目录：
-
-```bash
-docker run --rm -p 3000:3000 \
-  -v "$PWD/docs:/app/docs" \
-  zhuhanxin/docskit
-```
-
-挂载后，修改宿主机 `docs/` 下的 Markdown 文件、目录结构或 `docs.config.json`，刷新浏览器即可看到变化。存活检查地址为 <http://127.0.0.1:3000/healthz>，就绪检查地址为 <http://127.0.0.1:3000/readyz>。
+- **Docker 容器部署**：使用预构建镜像 `zhuhanxin/docskit`，支持数据挂载、环境变量和 Docker Compose。详见 [Docker 部署](getting-started/docker-deployment.md)。
+- **静态站点**：运行 `npm run build` 生成静态 HTML，部署到任意静态托管平台，不需要 Node.js 服务端。

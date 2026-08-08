@@ -49,6 +49,8 @@ const {
   MAX_MEDIA_BYTES,
   MAX_DOWNLOAD_BYTES,
   INDEX_POLL_INTERVAL_MS,
+  MAX_DIRECTORY_DEPTH,
+  MAX_DOCUMENT_COUNT,
   getDocumentIndex,
   closeDocumentIndexWatchers,
   createServer
@@ -235,6 +237,42 @@ test("图标策略、排序树和文档索引扫描覆盖配置优先级", async
   assert.deepEqual(sortNodes(localeNodes, "locale").map((node) => node.title), ["alpha", "zeta"]);
 });
 
+test("文档索引限制目录深度和可见文档规模", async () => {
+  const config = mergeConfig({});
+  const allowedPath = `${Array.from({ length: MAX_DIRECTORY_DEPTH }, (_, index) => `level-${index}`).join("/")}/allowed.md`;
+  const tooDeepPath = `${Array.from({ length: MAX_DIRECTORY_DEPTH + 1 }, (_, index) => `level-${index}`).join("/")}/too-deep.md`;
+  assert.equal(createTree([{ path: allowedPath, title: "允许", description: "", order: 1, updatedAt: "", createdAt: "", createdAtMs: 1, icon: "" }], config).length, 1);
+  assert.throws(() => createTree([{ path: tooDeepPath, title: "超深", description: "", order: 1, updatedAt: "", createdAt: "", createdAtMs: 1, icon: "" }], config), /文档目录超过 5 级/);
+
+  await withTempDir(async (root) => {
+    await writeFixture(root, allowedPath, "# 允许\n");
+    await writeFixture(root, tooDeepPath, "# 超深\n");
+    await assert.rejects(() => scanDocuments(root), /文档目录超过 5 级/);
+  });
+
+  await withTempDir(async (root) => {
+    await Promise.all(Array.from({ length: MAX_DOCUMENT_COUNT + 1 }, (_, index) =>
+      fsp.writeFile(path.join(root, `doc-${index}.md`), `# 文档 ${index}\n`, "utf8")
+    ));
+    await assert.rejects(
+      () => scanDocuments(root),
+      new RegExp(`Markdown 文档数量超过上限 ${MAX_DOCUMENT_COUNT} 篇`)
+    );
+  });
+
+  const tooManyDocuments = Array.from({ length: MAX_DOCUMENT_COUNT + 1 }, (_, index) => ({
+    path: `doc-${index}.md`,
+    title: `文档 ${index}`,
+    description: "",
+    order: 1,
+    updatedAt: "",
+    createdAt: "",
+    createdAtMs: 1,
+    icon: ""
+  }));
+  assert.throws(() => createTree(tooManyDocuments, config), new RegExp(`Markdown 文档数量超过上限 ${MAX_DOCUMENT_COUNT} 篇`));
+});
+
 test("Markdown 渲染、搜索和公开文档结果覆盖用户可见内容", () => {
   const inline = renderInline(
     '![图片](images/a.png "图片标题") [站内](../other.md#章节) [外部](https://example.com) [资源](../assets/a.png) [越界](../../secret.md) `:icon[file]` **粗体** __强调__ ~~删除~~ *斜体* :icon[rocket] <安全文本>',
@@ -347,13 +385,13 @@ test("Markdown AST 与代码高亮入口可独立复用", () => {
   assert.match(rendered.html, /data-language="javascript"/);
   assert.match(rendered.html, /class="hljs-keyword">const<\/span>/);
   assert.match(rendered.html, /class="markdown-code__pre markdown-code__pre--line-numbers"/);
-  assert.match(rendered.html, /class="markdown-code__line-number">1<\/span>/);
+  assert.match(rendered.html, /class="markdown-code__line">/);
   assert.match(rendered.html, /class="copy-button"/);
 
   const plainCode = renderMarkdown("```javascript\nconst answer = 42;\n```", "code.md", { code: { highlight: false, lineNumbers: false, copy: false, wrap: true } });
   assert.doesNotMatch(plainCode.html, /class="hljs-keyword"|markdown-code__gutter|class="copy-button"/);
   assert.match(plainCode.html, /markdown-code__pre markdown-code__pre--wrap/);
-  assert.match(plainCode.html, />const answer = 42;<\/code>/);
+  assert.match(plainCode.html, /class="markdown-code__line">const answer = 42;/);
 
   const formulas = renderMarkdown("行内公式 $x^2 + y^2$。\n\n$$\n\\sum_{i=1}^{n} i\n$$\n\n```math\n\\frac{1}{2}\n```", "math.md");
   assert.match(formulas.html, /class="markdown-math"/);
@@ -376,11 +414,17 @@ test("代码块布局不会拉伸行号栏并覆盖常见高亮 token", () => {
   assert.match(rendered.html, /class="hljs-literal"><span class="hljs-keyword">true<\/span>/);
   assert.match(rendered.html, /class="hljs-number">1<\/span>/);
   assert.match(styles, /\.markdown-body \.markdown-code__pre \{[^}]*display: flex;/s);
-  assert.match(styles, /\.markdown-body \.markdown-code__gutter \{[^}]*flex: 0 0 auto;/s);
+  assert.match(styles, /\.markdown-body \.markdown-code__pre--line-numbers \{[^}]*counter-reset: markdown-line;/s);
+  assert.match(styles, /\.markdown-body \.markdown-code__pre--line-numbers \.markdown-code__line::before \{[^}]*counter-increment: markdown-line;/s);
   assert.match(styles, /\.markdown-body \.markdown-code__content \.hljs-punctuation/);
   assert.match(styles, /\.markdown-body \.markdown-code__content \.hljs-operator/);
-  assert.match(styles, /\.markdown-body \.markdown-code__pre--wrap \.markdown-code__content \{[^}]*flex: 1 1 0;/s);
+  assert.match(styles, /\.markdown-body \.markdown-code__line \{[^}]*line-height: 1\.6;/s);
+  assert.match(styles, /\.markdown-body \.markdown-code__content \{[^}]*line-height: 1\.6;/s);
+  assert.match(styles, /\.markdown-body \.markdown-code__pre--wrap \.markdown-code__line \{[^}]*white-space: pre-wrap;/s);
   assert.doesNotMatch(styles, /grid-template-columns: auto minmax\(0, max-content\)/);
+
+  const compactCode = renderMarkdown("```javascript\n第一行\n第二行\n```", "code.md");
+  assert.doesNotMatch(compactCode.html, /<\/span>\n<span class="markdown-code__line">第二行/);
 });
 
 test("Markdown 解析器支持嵌套结构、引用链接、脚注和安全行内语法", () => {
@@ -434,8 +478,8 @@ test("Markdown 解析器支持嵌套结构、引用链接、脚注和安全行�
   assert.match(rendered.html, /<input type="checkbox" disabled checked \/>/);
   assert.match(rendered.html, /<blockquote><p>引用第一段<\/p>\n<p>引用第二段<\/p><\/blockquote>/);
   assert.match(rendered.html, /带\|管道/);
-  assert.match(rendered.html, /markdown-code__line-number">1<\/span>/);
-  assert.match(rendered.html, /<code class="markdown-code__content hljs">缩进代码<\/code>/);
+  assert.match(rendered.html, /class="markdown-code__line">/);
+  assert.match(rendered.html, /<code class="markdown-code__content hljs"><span class="markdown-code__line">缩进代码<\/span><\/code>/);
   assert.match(rendered.html, /class="footnotes"/);
   assert.equal(rendered.headings[0].id, "setext-标题");
 });

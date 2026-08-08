@@ -15,7 +15,11 @@
     "seo": {
       "title": "DocsKit 官方文档",
       "description": "DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。",
-      "keywords": ["DocsKit", "Markdown", "文档站点"],
+      "keywords": [
+        "DocsKit",
+        "Markdown",
+        "文档站点"
+      ],
       "author": "DocsKit",
       "robots": "index,follow",
       "canonical": "",
@@ -26,21 +30,62 @@
       "icp": "",
       "beian": "",
       "links": [
-        { "label": "智能体", "href": "https://chat.mymyjd.com", "external": true },
-        { "label": "免费 AI", "href": "https://aiapi.mymyjd.cn", "external": true },
-        { "label": "免费代理", "href": "https://proxy.mymyjd.com", "external": true }
+        {
+          "label": "智能体",
+          "href": "https://chat.mymyjd.com",
+          "external": true
+        },
+        {
+          "label": "免费 AI",
+          "href": "https://aiapi.mymyjd.cn",
+          "external": true
+        },
+        {
+          "label": "免费代理",
+          "href": "https://proxy.mymyjd.com",
+          "external": true
+        }
       ]
-    }
+    },
+    "themeColor": "#3370ff"
   },
   "topbar": {
     "version": "v1.0.1",
     "links": [
-      { "label": "开始使用", "path": "getting-started/installation.md", "icon": "rocket" },
-      { "label": "编写文档", "path": "guides/writing-docs.md", "icon": "pencil-line" },
-      { "label": "GitHub", "href": "https://github.com/test2024124zyx/docskit", "icon": "github", "external": true },
-      { "label": "智能体", "href": "https://chat.mymyjd.com", "icon": "sparkles", "external": true },
-      { "label": "免费 AI", "href": "https://aiapi.mymyjd.cn", "icon": "zap", "external": true },
-      { "label": "免费代理", "href": "https://proxy.mymyjd.com", "icon": "globe-2", "external": true }
+      {
+        "label": "开始使用",
+        "path": "getting-started/installation.md",
+        "icon": "rocket"
+      },
+      {
+        "label": "编写文档",
+        "path": "guides/writing-docs.md",
+        "icon": "pencil-line"
+      },
+      {
+        "label": "GitHub",
+        "href": "https://github.com/test2024124zyx/docskit",
+        "icon": "github",
+        "external": true
+      },
+      {
+        "label": "智能体",
+        "href": "https://chat.mymyjd.com",
+        "icon": "sparkles",
+        "external": true
+      },
+      {
+        "label": "免费 AI",
+        "href": "https://aiapi.mymyjd.cn",
+        "icon": "zap",
+        "external": true
+      },
+      {
+        "label": "免费代理",
+        "href": "https://proxy.mymyjd.com",
+        "icon": "globe-2",
+        "external": true
+      }
     ],
     "search": true,
     "themeToggle": true
@@ -59,7 +104,13 @@
     "expandMode": "accordion",
     "indent": 12,
     "iconColor": "",
-    "iconPalette": ["#3370ff", "#7c3aed", "#0f9d8a", "#d97706", "#d95850"],
+    "iconPalette": [
+      "#3370ff",
+      "#7c3aed",
+      "#0f9d8a",
+      "#d97706",
+      "#d95850"
+    ],
     "defaultFileIcon": "file-markdown",
     "defaultFolderIcon": "folder",
     "icons": {

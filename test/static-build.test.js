@@ -91,6 +91,7 @@ test("静态构建生成独立页面、离线数据、资源和安全头", async
       "index.html",
       "README.html",
       "guide/intro.html",
+      "bootstrap.json",
       "data/documents/README.md.json",
       "data/documents/guide/intro.md.json",
       "search-index.json",
@@ -112,6 +113,8 @@ test("静态构建生成独立页面、离线数据、资源和安全头", async
     const documentJson = await fsp.readFile(path.join(outputDir, "data/documents/README.md.json"), "utf8");
     const installGuide = await fsp.readFile(path.join(outputDir, "skills/install.md"), "utf8");
     const skillArchive = await fsp.readFile(path.join(outputDir, "docskit-doc-writing.zip"));
+    const bootstrapJson = await fsp.readFile(path.join(outputDir, "bootstrap.json"), "utf8");
+    const bootstrap = JSON.parse(bootstrapJson);
     const searchIndex = JSON.parse(await fsp.readFile(path.join(outputDir, "search-index.json"), "utf8"));
     const staticData = readStaticData(indexHtml);
 
@@ -129,9 +132,11 @@ test("静态构建生成独立页面、离线数据、资源和安全头", async
     assert.equal(skillArchive.subarray(0, 2).toString(), "PK");
     assert.match(skillArchive.toString("latin1"), /docskit-doc-writing\/SKILL\.md/);
     assert.doesNotMatch(indexHtml, /<\/script><script>alert/);
-    assert.ok(indexHtml.includes("\\u003c测试\\u003e"));
+    assert.equal(bootstrap.config.site.title, "静态<测试>站点");
     assert.match(guideHtml, /href="\/docs\/styles\.css"/);
-    assert.equal(staticData.staticBuild.documentUrls["guide/intro.md"], "/docs/guide/intro.html");
+    assert.equal(staticData.staticBuild.bootstrapUrl, "bootstrap.json");
+    assert.equal(bootstrap.staticBuild.documentUrls["guide/intro.md"], "/docs/guide/intro.html");
+    assert.equal(bootstrap.tree.find((node) => node.path === "guide")?.path, "guide");
     assert.equal(staticData.currentDocument.path, "README.md");
     assert.equal(searchIndex.documents.length, 2);
     assert.ok(searchIndex.documents.find((document) => document.path === "README.md").searchText.includes("首页"));

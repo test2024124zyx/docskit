@@ -1,10 +1,11 @@
 {
   "name": "markdown-docs-site",
-  "version": "1.0.4",
+  "version": "1.0.3",
   "private": true,
   "description": "A configurable Markdown documentation site",
   "scripts": {
     "build": "node build.js",
+    "build:highlight": "node build-highlight.js",
     "dev": "node server.js",
     "start": "node server.js",
     "test": "node --test --experimental-test-coverage"

@@ -9,6 +9,8 @@ const { classifyAsset, isDownloadableAsset } = require("./media-types");
 const DEFAULT_SECTION_PREFIX = "section";
 const DEFAULT_CODE_LANGUAGE = "code";
 const MAX_INLINE_RECURSION = 32;
+// 代码块行数超过此阈值时，跳过高亮处理，交由客户端延迟高亮，避免服务端性能瓶颈。
+const LAZY_HIGHLIGHT_LINE_THRESHOLD = 100;
 const MATH_LANGUAGES = new Set(["math", "latex", "tex"]);
 const DEFAULT_CODE_OPTIONS = {
   highlight: true,
@@ -895,9 +897,8 @@ function renderCodeHeader(node, codeOptions) {
 }
 
 function renderLineNumberGutter(code) {
-  const lineCount = String(code ?? "").split("\n").length;
-  const numbers = Array.from({ length: lineCount }, (_, index) => `<span class="markdown-code__line-number">${index + 1}</span>`).join("");
-  return `<span class="markdown-code__gutter" aria-hidden="true">${numbers}</span>`;
+  // 行号已通过 CSS counter 在代码行内 ::before 伪元素生成，gutter 不再输出。
+  return "";
 }
 
 function renderCodeBlock(node, options = {}) {
@@ -908,11 +909,18 @@ function renderCodeBlock(node, options = {}) {
   if (language === "mermaid") {
     return `<div class="code-block markdown-code markdown-diagram" data-language="mermaid">${header}<div class="markdown-mermaid__source" data-mermaid-source>${escapeHtml(node.code)}</div><pre class="markdown-mermaid__fallback"><code>${escapeHtml(node.code)}</code></pre></div>`;
   }
+  // 判断是否启用懒高亮：代码行数超过阈值时跳过高亮，交由客户端延迟处理。
+  const lineCount = String(node.code ?? "").split("\n").length;
+  const useLazyHighlight = codeOptions.highlight && lineCount > LAZY_HIGHLIGHT_LINE_THRESHOLD;
+  const isHighlighted = codeOptions.highlight && !useLazyHighlight;
   const preClasses = ["markdown-code__pre", codeOptions.lineNumbers ? "markdown-code__pre--line-numbers" : "", codeOptions.wrap ? "markdown-code__pre--wrap" : ""].filter(Boolean).join(" ");
-  const codeClasses = ["markdown-code__content", codeOptions.highlight ? "hljs" : ""].filter(Boolean).join(" ");
-  const highlighted = codeOptions.highlight ? highlightedCode(node.code, language) : escapeHtml(node.code);
+  const codeClasses = ["markdown-code__content", isHighlighted ? "hljs" : ""].filter(Boolean).join(" ");
+  const codeContent = isHighlighted ? highlightedCode(node.code, language) : escapeHtml(node.code);
+  // 为每行代码包裹 span，配合 CSS counter 实现行号显示；块级行自行换行，避免 pre 保留额外空白行。
+  const wrappedCode = codeContent.split("\n").map((line) => `<span class="markdown-code__line">${line || " "}</span>`).join("");
   const gutter = codeOptions.lineNumbers ? renderLineNumberGutter(node.code) : "";
-  return `<div class="code-block markdown-code" data-language="${escapeHtml(language)}">${header}<pre class="${preClasses}">${gutter}<code class="${codeClasses}">${highlighted}</code></pre></div>`;
+  const lazyAttr = useLazyHighlight ? ` data-lazy-highlight="${escapeHtml(language)}"` : "";
+  return `<div class="code-block markdown-code" data-language="${escapeHtml(language)}"${lazyAttr}>${header}<pre class="${preClasses}">${gutter}<code class="${codeClasses}">${wrappedCode}</code></pre></div>`;
 }
 
 function renderListItem(item, context, state, renderOptions) {

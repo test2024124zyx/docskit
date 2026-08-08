@@ -58,6 +58,7 @@ const MIME_TYPES = {
 const SVG_ASSET_CONTENT_SECURITY_POLICY = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; script-src 'none'; object-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src data:; sandbox";
 
 function vendorResourcePath(pathname) {
+  if (pathname === "/vendor/highlight.min.js") return "dist/vendor/highlight.min.js";
   if (pathname === "/vendor/mermaid.min.js") return "node_modules/mermaid/dist/mermaid.min.js";
   if (pathname.startsWith("/vendor/katex/")) {
     let relative;

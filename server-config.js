@@ -15,7 +15,13 @@ const MAX_MARKDOWN_BYTES = 5 * 1024 * 1024;
 const MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 512 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
-const INDEX_POLL_INTERVAL_MS = 1000;
+// watcher 用于即时失效，低频签名检查用于兜底漏掉的文件系统事件。
+const INDEX_POLL_INTERVAL_MS = 2000;
+// 限制导航树的层级和规模，避免扫描、渲染和并发响应消耗不可控。
+const MAX_DIRECTORY_DEPTH = 5;
+const MAX_DOCUMENT_COUNT = 300;
+const MAX_DIRECTORY_WATCHERS = 256;
+const SEARCH_CACHE_SIZE = 50;
 const SKILL_INSTALL_PATH = "skills/install.md";
 const SKILL_ARCHIVE_PATH = "docskit-doc-writing.zip";
 const PUBLIC_ROOT_FILES = Object.freeze([SKILL_INSTALL_PATH, SKILL_ARCHIVE_PATH]);
@@ -66,6 +72,7 @@ const DEFAULT_CONFIG = {
     logo: "",
     favicon: "",
     ico: "",
+    themeColor: "",
     seo: {
       title: "",
       description: "",
@@ -257,6 +264,7 @@ function mergeConfig(source) {
       ...DEFAULT_CONFIG.site,
       ...siteInput,
       brand: { ...DEFAULT_CONFIG.site.brand, ...brand },
+      themeColor: normalizeColorValue(siteInput.themeColor),
       seo: { ...DEFAULT_CONFIG.site.seo, ...seo },
       footer: {
         ...DEFAULT_CONFIG.site.footer,
@@ -352,6 +360,10 @@ module.exports = {
   MAX_MEDIA_BYTES,
   MAX_DOWNLOAD_BYTES,
   INDEX_POLL_INTERVAL_MS,
+  MAX_DIRECTORY_DEPTH,
+  MAX_DOCUMENT_COUNT,
+  MAX_DIRECTORY_WATCHERS,
+  SEARCH_CACHE_SIZE,
   SKILL_INSTALL_PATH,
   SKILL_ARCHIVE_PATH,
   PUBLIC_ROOT_FILES,

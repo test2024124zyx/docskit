@@ -176,7 +176,9 @@ async function copyProjectRuntime(outputDir) {
   const mermaidSource = path.join(ROOT_DIR, "node_modules", "mermaid", "dist", "mermaid.min.js");
   const katexSource = path.join(ROOT_DIR, "node_modules", "katex", "dist");
   await fsp.mkdir(path.join(outputDir, "vendor"), { recursive: true });
+  const hljsSource = path.join(ROOT_DIR, "dist", "vendor", "highlight.min.js");
   await fsp.copyFile(mermaidSource, path.join(outputDir, "vendor", "mermaid.min.js"));
+  await fsp.copyFile(hljsSource, path.join(outputDir, "vendor", "highlight.min.js"));
   await fsp.cp(katexSource, path.join(outputDir, "vendor", "katex"), { recursive: true });
 }
 
@@ -287,11 +289,10 @@ async function buildStaticSite(options = {}) {
   const publicDocuments = new Map(documents.map((document) => [document.path, publicDocument(document, config, { links })]));
   const summaries = documents.map((document) => documentSummary(document, config, base));
   const staticBuild = { base, documentUrls, routeDocuments };
+  const staticPageBuild = { base, bootstrapUrl: "bootstrap.json" };
+  const staticBootstrap = { staticBuild, config: publicConfig(config), tree, documents: summaries, defaultPath: homePath };
   const makeStaticData = (currentDocument) => ({
-    staticBuild,
-    config: publicConfig(config),
-    tree,
-    documents: summaries,
+    staticBuild: staticPageBuild,
     defaultPath: homePath,
     currentPath: currentDocument ? currentDocument.path : "",
     currentDocument: currentDocument || null
@@ -305,6 +306,7 @@ async function buildStaticSite(options = {}) {
     await copyProjectRuntime(stagedDir);
     const copiedRootFiles = await copyPublicRootFiles(stagedDir);
     const copiedAssets = await copyPublicAssets(docsDir, stagedDir);
+    await writeText(path.join(stagedDir, "bootstrap.json"), JSON.stringify(staticBootstrap));
     for (const document of documents) {
       const documentData = publicDocuments.get(document.path);
       await writeText(path.join(stagedDir, "data", "documents", `${document.path}.json`), JSON.stringify(documentData));
