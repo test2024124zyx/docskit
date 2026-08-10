@@ -8,6 +8,9 @@ ENV NODE_ENV=production \
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
+# 在镜像构建阶段生成客户端延迟高亮 bundle，避免运行时缺少构建脚本或写目录权限不足。
+COPY build-highlight.js ./
+RUN node build-highlight.js
 # 复制服务端拆分模块、Markdown 解析器和媒体类型规则，保证生产镜像与源码运行链路一致。
 COPY server.js server-assets.js skill-archive.js markdown.js media-types.js server-config.js server-filesystem.js server-lifecycle.js index.html script.js styles.css ./
 COPY docs ./docs

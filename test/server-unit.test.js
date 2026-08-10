@@ -58,6 +58,12 @@ const {
 
 const PROJECT_DIR = path.resolve(__dirname, "..");
 
+test("Docker 镜像预构建高亮 bundle 并包含启动依赖", () => {
+  const dockerfile = fs.readFileSync(path.join(PROJECT_DIR, "Dockerfile"), "utf8");
+  assert.match(dockerfile, /COPY build-highlight\.js \.\//);
+  assert.match(dockerfile, /RUN node build-highlight\.js/);
+});
+
 async function withTempDir(callback) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "docskit-unit-"));
   try {
