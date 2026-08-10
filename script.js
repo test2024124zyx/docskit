@@ -212,6 +212,68 @@
     window.setTimeout(() => toast.remove(), 2800);
   }
 
+  function fallbackCopyText(text) {
+    const activeElement = document.activeElement;
+    const activeSelection = activeElement && typeof activeElement.selectionStart === "number"
+      ? {
+          start: activeElement.selectionStart,
+          end: activeElement.selectionEnd,
+          direction: activeElement.selectionDirection
+        }
+      : null;
+    const pageSelection = typeof window.getSelection === "function" ? window.getSelection() : null;
+    const selectedRanges = [];
+    if (pageSelection) {
+      for (let index = 0; index < pageSelection.rangeCount; index += 1) selectedRanges.push(pageSelection.getRangeAt(index).cloneRange());
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.readOnly = true;
+    textarea.dataset.copyFallback = "";
+    textarea.setAttribute("aria-hidden", "true");
+    textarea.style.position = "fixed";
+    textarea.style.inset = "0 auto auto -9999px";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+
+    let copied = false;
+    try {
+      textarea.focus({ preventScroll: true });
+      textarea.select();
+      copied = typeof document.execCommand === "function" && document.execCommand("copy") === true;
+    } catch (error) {
+      copied = false;
+    } finally {
+      textarea.remove();
+      if (activeElement && document.contains(activeElement) && typeof activeElement.focus === "function") {
+        try { activeElement.focus({ preventScroll: true }); } catch (error) { activeElement.focus(); }
+        if (activeSelection && typeof activeElement.setSelectionRange === "function") {
+          activeElement.setSelectionRange(activeSelection.start, activeSelection.end, activeSelection.direction || "none");
+        }
+      }
+      if (pageSelection && selectedRanges.length) {
+        pageSelection.removeAllRanges();
+        selectedRanges.forEach((range) => pageSelection.addRange(range));
+      }
+    }
+    return copied;
+  }
+
+  async function copyTextToClipboard(text) {
+    const clipboard = window.navigator && window.navigator.clipboard;
+    if (clipboard && typeof clipboard.writeText === "function") {
+      try {
+        await clipboard.writeText(text);
+        return;
+      } catch (error) {
+        // 权限受限时继续尝试兼容复制，兼顾 HTTP 和内嵌浏览器环境。
+      }
+    }
+    if (!fallbackCopyText(text)) throw new Error("clipboard unavailable");
+  }
+
   async function requestJson(endpoint, options = {}) {
     const response = await fetch(endpoint, { headers: { Accept: "application/json" }, ...options });
     const payload = await response.json().catch(() => ({}));
@@ -1060,9 +1122,7 @@
     const copyButton = event.target.closest(".copy-button");
     if (copyButton) {
       const copyText = copyButton.dataset.copy || "";
-      const clipboard = window.navigator && window.navigator.clipboard;
-      const copy = clipboard ? clipboard.writeText(copyText) : Promise.reject(new Error("clipboard unavailable"));
-      copy.then(() => {
+      copyTextToClipboard(copyText).then(() => {
         copyButton.classList.add("is-copied");
         const label = copyButton.querySelector("span");
         if (label) label.textContent = "已复制";

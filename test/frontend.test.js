@@ -433,6 +433,63 @@ test("前端渲染站点品牌、SEO、页脚、图标和常用交互", async ()
 
 });
 
+test("前端在现代剪贴板不可用时回退复制并恢复输入焦点", async () => {
+  const code = "const answer = 42;\nconsole.log(answer);";
+  const mounted = await mountFrontend({
+    config: baseConfig,
+    tree: baseTree(),
+    documents: [],
+    defaultPath: "guide/intro.md",
+    documentData: {
+      ...baseDocument(),
+      html: `<h1 id="指南入口">指南入口</h1><button class="copy-button" type="button" data-copy="${code}"><span>复制</span></button>`
+    }
+  });
+  try {
+    let copiedText = "";
+    let fallbackCopyCount = 0;
+    mounted.document.execCommand = (command) => {
+      assert.equal(command, "copy");
+      copiedText = mounted.document.activeElement.value;
+      fallbackCopyCount += 1;
+      return true;
+    };
+    const searchInput = mounted.document.querySelector("#search-input");
+    searchInput.value = "保留的搜索内容";
+    searchInput.focus();
+    searchInput.setSelectionRange(2, 5, "backward");
+
+    const copyButton = mounted.document.querySelector(".copy-button");
+    copyButton.click();
+    await waitFor(() => copyButton.classList.contains("is-copied"));
+
+    assert.equal(copiedText, code);
+    assert.equal(mounted.document.activeElement, searchInput);
+    assert.equal(searchInput.selectionStart, 2);
+    assert.equal(searchInput.selectionEnd, 5);
+    assert.equal(searchInput.selectionDirection, "backward");
+    assert.equal(mounted.document.querySelector("[data-copy-fallback]"), null);
+
+    let modernCopyAttempts = 0;
+    Object.defineProperty(mounted.window.navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          modernCopyAttempts += 1;
+          throw new Error("clipboard permission denied");
+        }
+      }
+    });
+    copyButton.click();
+    await waitFor(() => fallbackCopyCount === 2);
+    assert.equal(modernCopyAttempts, 1);
+    assert.equal(copiedText, code);
+    assert.doesNotMatch(mounted.document.querySelector(".toast-region").textContent, /复制失败/);
+  } finally {
+    mounted.cleanup();
+  }
+});
+
 test("前端覆盖空目录、加载失败、目录锚点和键盘搜索状态", async () => {
   const emptyConfig = {
     ...baseConfig,
