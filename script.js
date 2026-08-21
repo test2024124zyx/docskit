@@ -856,7 +856,10 @@
           try {
             const normalizedLang = String(language || "").toLowerCase();
             if (!["code", "plain", "text", "txt"].includes(normalizedLang) && hljs.getLanguage(normalizedLang)) {
-              const result = hljs.highlight(codeEl.textContent, { language: normalizedLang, ignoreIllegals: true });
+              // 服务端行节点之间没有插入换行文本，必须按行节点重建源码，避免懒高亮把整段代码合并成一行。
+              const lineNodes = Array.from(codeEl.children).filter((line) => line.classList.contains("markdown-code__line"));
+              const source = lineNodes.length ? lineNodes.map((line) => line.textContent).join("\n") : codeEl.textContent;
+              const result = hljs.highlight(source, { language: normalizedLang, ignoreIllegals: true });
               // 保持行结构：对高亮后的 HTML 按行分割并重新包裹 span。
               const lines = result.value.split("\n");
               codeEl.innerHTML = lines.map((line) => `<span class="markdown-code__line">${line || " "}</span>`).join("\n");
