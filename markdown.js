@@ -9,6 +9,7 @@ const { classifyAsset, isDownloadableAsset } = require("./media-types");
 const DEFAULT_SECTION_PREFIX = "section";
 const DEFAULT_CODE_LANGUAGE = "code";
 const MAX_INLINE_RECURSION = 32;
+const MAX_BLOCK_RECURSION = 64;
 // 代码块行数超过此阈值时，跳过高亮处理，交由客户端延迟高亮，避免服务端性能瓶颈。
 const LAZY_HIGHLIGHT_LINE_THRESHOLD = 100;
 const MATH_LANGUAGES = new Set(["math", "latex", "tex"]);
@@ -377,9 +378,24 @@ function markdownTarget(rawTarget, currentPath, kind, links = {}) {
   const hashIndex = target.indexOf("#");
   const pathPart = hashIndex >= 0 ? target.slice(0, hashIndex) : target;
   const hash = hashIndex >= 0 ? target.slice(hashIndex) : "";
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(normalizeRelative(currentPath)), pathPart));
+  // URL 路径只解码一次。禁止编码后的分隔符改变路径层级，之后再检查目录边界。
+  let decodedPath;
+  try {
+    const unescapedPath = pathPart.replace(/\\(.)/g, (match, character) => ESCAPABLE_CHARACTERS.has(character) ? character : match);
+    decodedPath = unescapedPath.split("/").map((segment) => {
+      const decoded = decodeURIComponent(segment);
+      if (/[\\/\0]/.test(decoded)) throw new Error("无效链接路径");
+      return decoded;
+    }).join("/");
+  } catch (error) {
+    return { href: "#", external: false };
+  }
+  const relativePath = decodedPath.startsWith("/")
+    ? decodedPath.slice(1)
+    : path.posix.join(path.posix.dirname(normalizeRelative(currentPath)), decodedPath);
+  const resolved = path.posix.normalize(relativePath);
   if (!resolved || resolved.startsWith("../") || resolved === ".." || resolved.includes("\0")) return { href: "#", external: false };
-  if (/\.(md|markdown)$/i.test(pathPart)) {
+  if (/\.(md|markdown)$/i.test(decodedPath)) {
     const href = typeof links.document === "function"
       ? links.document(resolved, hash)
       : `/?doc=${encodeURIComponent(resolved)}${hash}`;
@@ -691,7 +707,7 @@ function collectDefinitions(lines) {
   return { references, footnotes, skipped };
 }
 
-function parseBlockquote(lines, start, context) {
+function parseBlockquote(lines, start, context, depth) {
   const quoteLines = [];
   let index = start;
   while (index < lines.length) {
@@ -709,10 +725,10 @@ function parseBlockquote(lines, start, context) {
   }
   const callout = quoteLines[0]?.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$/i);
   const body = callout ? quoteLines.slice(1) : quoteLines;
-  return { node: { type: "blockquote", callout: callout ? callout[1].toLowerCase() : "", children: parseBlocks(body, 0, body.length, context, new Set()) }, nextIndex: index };
+  return { node: { type: "blockquote", callout: callout ? callout[1].toLowerCase() : "", children: parseBlocks(body, 0, body.length, context, new Set(), depth + 1) }, nextIndex: index };
 }
 
-function parseList(lines, start, context) {
+function parseList(lines, start, context, depth) {
   const first = getListMarker(lines[start]);
   const items = [];
   let current = null;
@@ -736,7 +752,7 @@ function parseList(lines, start, context) {
       item.task = task[1].toLowerCase() === "x";
       item.lines[0] = task[2];
     }
-    item.children = parseBlocks(item.lines, 0, item.lines.length, context, new Set());
+    item.children = parseBlocks(item.lines, 0, item.lines.length, context, new Set(), depth + 1);
   });
   return { node: { type: "list", ordered: first.ordered, start: first.start, items }, nextIndex: index };
 }
@@ -747,7 +763,11 @@ function preserveHardBreakSpaces(line) {
   return / {2,}$/.test(value) ? value : value.trimEnd();
 }
 
-function parseBlocks(lines, start, end, context, skipped) {
+function parseBlocks(lines, start, end, context, skipped, depth = 0) {
+  // 超深引用/列表降级为转义代码，保留可读内容而不是溢出调用栈。
+  if (depth >= MAX_BLOCK_RECURSION) {
+    return [{ type: "code", language: "text", code: lines.slice(start, end).filter((_, index) => !skipped.has(start + index)).join("\n") }];
+  }
   const nodes = [];
   let index = start;
   while (index < end) {
@@ -809,13 +829,13 @@ function parseBlocks(lines, start, end, context, skipped) {
       continue;
     }
     if (/^\s{0,3}>/.test(lines[index])) {
-      const parsed = parseBlockquote(lines, index, context);
+      const parsed = parseBlockquote(lines, index, context, depth);
       nodes.push(parsed.node);
       index = parsed.nextIndex;
       continue;
     }
     if (getListMarker(lines[index])) {
-      const parsed = parseList(lines, index, context);
+      const parsed = parseList(lines, index, context, depth);
       nodes.push(parsed.node);
       index = parsed.nextIndex;
       continue;
@@ -901,6 +921,35 @@ function renderLineNumberGutter(code) {
   return "";
 }
 
+// 按行包装时关闭并重新打开跨行高亮标签，保持每行都是独立且平衡的 DOM。
+function wrapHighlightedCode(html) {
+  const source = String(html);
+  const openTags = [];
+  const lines = [];
+  const tokens = /<\/?span\b[^>]*>|\n/g;
+  let line = "";
+  let offset = 0;
+  const appendLine = () => {
+    const empty = line.replace(/<\/?span\b[^>]*>/g, "") === "";
+    lines.push(`<span class="markdown-code__line"${empty ? ' data-code-empty=""' : ""}>${line}${empty ? " " : ""}${"</span>".repeat(openTags.length)}</span>`);
+    line = openTags.join("");
+  };
+  for (const token of source.matchAll(tokens)) {
+    line += source.slice(offset, token.index);
+    if (token[0] === "\n") {
+      appendLine();
+    } else {
+      line += token[0];
+      if (token[0].startsWith("</")) openTags.pop();
+      else openTags.push(token[0]);
+    }
+    offset = token.index + token[0].length;
+  }
+  line += source.slice(offset);
+  appendLine();
+  return lines.join("");
+}
+
 function renderCodeBlock(node, options = {}) {
   const codeOptions = normalizeCodeOptions(options);
   const language = String(node.language || DEFAULT_CODE_LANGUAGE).toLowerCase();
@@ -917,7 +966,7 @@ function renderCodeBlock(node, options = {}) {
   const codeClasses = ["markdown-code__content", isHighlighted ? "hljs" : ""].filter(Boolean).join(" ");
   const codeContent = isHighlighted ? highlightedCode(node.code, language) : escapeHtml(node.code);
   // 为每行代码包裹 span，配合 CSS counter 实现行号显示；块级行自行换行，避免 pre 保留额外空白行。
-  const wrappedCode = codeContent.split("\n").map((line) => `<span class="markdown-code__line">${line || " "}</span>`).join("");
+  const wrappedCode = wrapHighlightedCode(codeContent);
   const gutter = codeOptions.lineNumbers ? renderLineNumberGutter(node.code) : "";
   const lazyAttr = useLazyHighlight ? ` data-lazy-highlight="${escapeHtml(language)}"` : "";
   return `<div class="code-block markdown-code" data-language="${escapeHtml(language)}"${lazyAttr}>${header}<pre class="${preClasses}">${gutter}<code class="${codeClasses}">${wrappedCode}</code></pre></div>`;
@@ -1017,6 +1066,7 @@ module.exports = {
   firstHeading,
   firstParagraph,
   markdownTarget,
+  wrapHighlightedCode,
   renderInline,
   parseMarkdown,
   renderMarkdown

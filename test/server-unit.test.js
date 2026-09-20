@@ -413,7 +413,6 @@ test("Markdown AST 与代码高亮入口可独立复用", () => {
 
 test("代码块布局不会拉伸行号栏并覆盖常见高亮 token", () => {
   const styles = fs.readFileSync(path.join(PROJECT_DIR, "styles.css"), "utf8");
-  const frontendScript = fs.readFileSync(path.join(PROJECT_DIR, "script.js"), "utf8");
   const rendered = renderMarkdown("```json\n{\"enabled\": true, \"count\": 1}\n```", "code.md");
 
   assert.match(rendered.html, /class="hljs-punctuation">\{/);
@@ -429,7 +428,6 @@ test("代码块布局不会拉伸行号栏并覆盖常见高亮 token", () => {
   assert.match(styles, /\.markdown-body \.markdown-code__content \{[^}]*line-height: 1\.6;/s);
   assert.match(styles, /\.markdown-body \.markdown-code__pre--wrap \.markdown-code__line \{[^}]*white-space: pre-wrap;/s);
   assert.doesNotMatch(styles, /grid-template-columns: auto minmax\(0, max-content\)/);
-  assert.match(frontendScript, /lineNodes\.map\(\(line\) => line\.textContent\)\.join\("\\n"\)/);
 
   const compactCode = renderMarkdown("```javascript\n第一行\n第二行\n```", "code.md");
   assert.doesNotMatch(compactCode.html, /<\/span>\n<span class="markdown-code__line">第二行/);

@@ -123,6 +123,26 @@ function documentOutputPath(relativePath) {
   return candidate.toLowerCase() === "index.html" ? `${normalized}.html` : candidate;
 }
 
+function assertUniqueDocumentOutputs(documents) {
+  const outputs = new Map();
+  for (const document of documents) {
+    const outputPath = documentOutputPath(document.path);
+    // 静态产物也可能部署到大小写不敏感的文件系统。
+    const key = outputPath.normalize("NFC").toLowerCase();
+    if (outputs.has(key)) {
+      throw new Error(`静态页面输出路径冲突：${outputs.get(key)} 与 ${document.path} -> ${outputPath}`);
+    }
+    outputs.set(key, document.path);
+  }
+  for (const [outputPath, sourcePath] of outputs) {
+    let parent = path.posix.dirname(outputPath);
+    while (parent !== ".") {
+      if (outputs.has(parent)) throw new Error(`静态页面输出路径冲突：${outputs.get(parent)} 与 ${sourcePath}`);
+      parent = path.posix.dirname(parent);
+    }
+  }
+}
+
 function isWithin(parent, target) {
   const relative = path.relative(path.resolve(parent), path.resolve(target));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -272,6 +292,7 @@ async function buildStaticSite(options = {}) {
   const template = await fsp.readFile(PROJECT_TEMPLATE_PATH, "utf8");
   const scanned = await scanDocuments(docsDir);
   const { documents, directoryMetadata } = scanned;
+  assertUniqueDocumentOutputs(documents);
   const tree = createTree(documents, config, directoryMetadata);
   const preferred = preferredDocument(documents);
   const documentUrls = Object.fromEntries(documents.map((document) => [document.path, publicPath(base, documentOutputPath(document.path))]));
@@ -338,6 +359,7 @@ module.exports = {
   normalizeBase,
   normalizeSiteUrl,
   documentOutputPath,
+  assertUniqueDocumentOutputs,
   publicPath,
   buildStaticSite
 };
