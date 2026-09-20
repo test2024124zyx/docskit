@@ -36,7 +36,9 @@ jobs:
           cat "$RUNNER_TEMP/review-baseline.log"
           test "$status" -ne 0
       - name: Apply source-verified fixes
-        run: python3 _review/apply.py
+        run: |
+          python3 _review/apply.py
+          python3 _review/followup.py
       - name: Build validation
         run: npm run build
       - name: Full test suite with regressions
@@ -48,7 +50,7 @@ jobs:
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add server-assets.js server.js markdown.js script.js static-build.js
+          git add server-assets.js server.js markdown.js script.js static-build.js test/server-unit.test.js test/review-regressions.test.js
           git commit -m 'fix: correct download cleanup, Markdown rendering and static build edge cases'
           git push origin HEAD:refs/heads/fix/review-20260920
           git rev-parse HEAD
