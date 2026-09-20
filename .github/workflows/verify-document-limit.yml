@@ -1,0 +1,57 @@
+name: Verify default document limit
+
+on:
+  push:
+    branches: [fix/default-document-limit-1000]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Update default and matching documentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          config = Path('server-config.js')
+          source = config.read_text(encoding='utf-8')
+          old = 'const MAX_DOCUMENT_COUNT = 300;'
+          assert source.count(old) == 1, 'Unexpected source: document limit has changed'
+          config.write_text(source.replace(old, 'const MAX_DOCUMENT_COUNT = 1000;'), encoding='utf-8')
+          paths = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          for name in paths:
+              if not name.endswith('.md'):
+                  continue
+              file = Path(name)
+              original = file.read_text(encoding='utf-8')
+              updated = original.replace('300 篇', '1000 篇').replace('300篇', '1000篇')
+              if updated != original:
+                  file.write_text(updated, encoding='utf-8')
+          PY
+          git diff --check
+          git diff --stat
+          git diff
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=moderate
+      - name: Commit verified changes on isolated branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git commit -m 'feat: 默认 Markdown 文档上限提高至 1000 篇并同步说明'
+          git push origin HEAD:refs/heads/fix/default-document-limit-1000
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
