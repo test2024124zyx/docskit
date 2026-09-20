@@ -19,7 +19,7 @@ const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 const INDEX_POLL_INTERVAL_MS = 2000;
 // 限制导航树的层级和规模，避免扫描、渲染和并发响应消耗不可控。
 const MAX_DIRECTORY_DEPTH = 5;
-const MAX_DOCUMENT_COUNT = 300;
+const MAX_DOCUMENT_COUNT = 1000;
 const MAX_DIRECTORY_WATCHERS = 256;
 const SEARCH_CACHE_SIZE = 50;
 const SKILL_INSTALL_PATH = "skills/install.md";
