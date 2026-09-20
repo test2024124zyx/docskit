@@ -842,6 +842,35 @@
     return state.hljsPromise;
   }
 
+  // 与服务端一致地平衡跨行高亮标签；回归测试校验两端输出一致。
+  function wrapHighlightedCode(html) {
+    const source = String(html);
+    const openTags = [];
+    const lines = [];
+    const tokens = /<\/?span\b[^>]*>|\n/g;
+    let line = "";
+    let offset = 0;
+    const appendLine = () => {
+      const empty = line.replace(/<\/?span\b[^>]*>/g, "") === "";
+      lines.push(`<span class="markdown-code__line"${empty ? ' data-code-empty=""' : ""}>${line}${empty ? " " : ""}${"</span>".repeat(openTags.length)}</span>`);
+      line = openTags.join("");
+    };
+    for (const token of source.matchAll(tokens)) {
+      line += source.slice(offset, token.index);
+      if (token[0] === "\n") {
+        appendLine();
+      } else {
+        line += token[0];
+        if (token[0].startsWith("</")) openTags.pop();
+        else openTags.push(token[0]);
+      }
+      offset = token.index + token[0].length;
+    }
+    line += source.slice(offset);
+    appendLine();
+    return lines.join("");
+  }
+
   function highlightCodeBlocks(container) {
     const lazyBlocks = Array.from(container.querySelectorAll("[data-lazy-highlight]"));
     if (!lazyBlocks.length) return;
@@ -858,11 +887,10 @@
             if (!["code", "plain", "text", "txt"].includes(normalizedLang) && hljs.getLanguage(normalizedLang)) {
               // 服务端行节点之间没有插入换行文本，必须按行节点重建源码，避免懒高亮把整段代码合并成一行。
               const lineNodes = Array.from(codeEl.children).filter((line) => line.classList.contains("markdown-code__line"));
-              const source = lineNodes.length ? lineNodes.map((line) => line.textContent).join("\n") : codeEl.textContent;
+              const source = lineNodes.length ? lineNodes.map((line) => line.hasAttribute("data-code-empty") ? "" : line.textContent).join("\n") : codeEl.textContent;
               const result = hljs.highlight(source, { language: normalizedLang, ignoreIllegals: true });
-              // 保持行结构：对高亮后的 HTML 按行分割并重新包裹 span。
-              const lines = result.value.split("\n");
-              codeEl.innerHTML = lines.map((line) => `<span class="markdown-code__line">${line || " "}</span>`).join("\n");
+              // 行节点之间不插入换行文本，避免 pre 中产生额外空白行。
+              codeEl.innerHTML = wrapHighlightedCode(result.value);
               codeEl.classList.add("hljs");
             }
           } catch (error) { /* 高亮失败时保留原始文本 */ }

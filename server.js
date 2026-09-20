@@ -575,7 +575,8 @@ function publicDocument(document, config, options = {}) {
   const icon = documentIcon(config, document);
   // 使用文档、渲染配置和链接模式作为缓存 key，避免配置变化或静态链接复用旧 HTML。
   const cacheKey = `${document.path}|${document.updatedAt}|${icon.name}:${icon.color}|${JSON.stringify(config.markdown)}|${options.links ? "static" : "dynamic"}`;
-  const cached = renderCache.get(cacheKey);
+  // 静态链接回调捕获本次构建的 base/路由表，不复用跨构建的全局缓存。
+  const cached = options.links ? null : renderCache.get(cacheKey);
   if (cached) return cached;
 
   const rendered = renderMarkdown(document.body, document.path, { ...config.markdown, links: options.links });
@@ -591,7 +592,7 @@ function publicDocument(document, config, options = {}) {
     iconColor: icon.color,
     iconColors: icon.colors
   };
-  renderCache.set(cacheKey, result);
+  if (!options.links) renderCache.set(cacheKey, result);
   // 限制缓存大小，防止内存无限增长。
   if (renderCache.size > 200) {
     const firstKey = renderCache.keys().next().value;
@@ -783,12 +784,12 @@ function renderDocumentSection(documentData) {
 function replaceHeadMeta(template, attribute, name, value) {
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`<meta\\s+${attribute}="${escapedName}"\\s+content="[^"]*"\\s*/?>`, "i");
-  return template.replace(pattern, `<meta ${attribute}="${escapeHtml(name)}" content="${escapeHtml(value)}" />`);
+  return template.replace(pattern, () => `<meta ${attribute}="${escapeHtml(name)}" content="${escapeHtml(value)}" />`);
 }
 
 function renderPage(template, config, documentData, pageUrl, options = {}) {
   const seo = seoValues(config, documentData, pageUrl, options);
-  let html = template.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(seo.title)}</title>`);
+  let html = template.replace(/<title>[^<]*<\/title>/i, () => `<title>${escapeHtml(seo.title)}</title>`);
   [
     ["name", "description", seo.description],
     ["name", "keywords", seo.keywords],
@@ -806,26 +807,26 @@ function renderPage(template, config, documentData, pageUrl, options = {}) {
     ["name", "twitter:image", seo.image]
   ].forEach(([attribute, name, value]) => { html = replaceHeadMeta(html, attribute, name, value); });
   const canonical = `<link rel="canonical" href="${escapeHtml(seo.canonical)}" />`;
-  html = html.replace(/<link\s+rel="canonical"[^>]*>/i, canonical);
+  html = html.replace(/<link\s+rel="canonical"[^>]*>/i, () => canonical);
   // 注入主题色 CSS 变量覆盖
   const themeColors = deriveThemeColors(config.site?.themeColor);
   if (themeColors) {
     const themeStyle = `<style id="theme-color-vars">:root { --accent: ${themeColors.accent}; --accent-dark: ${themeColors.accentDark}; --accent-soft: ${themeColors.accentSoft}; --accent-pale: ${themeColors.accentPale}; }</style>`;
-    html = html.replace("</head>", `${themeStyle}
+    html = html.replace("</head>", () => `${themeStyle}
 </head>`);
   }
   const faviconSource = imageSource(config.site?.favicon || config.site?.ico, options);
   const faviconType = String(config.site?.favicon || config.site?.ico || "").toLowerCase().endsWith(".ico") ? "image/x-icon" : "image/png";
   const favicon = `<link rel="icon" id="site-favicon"${faviconSource ? ` href="${escapeHtml(faviconSource)}" type="${faviconType}"` : ""} />`;
-  html = html.replace(/<link\s+rel="icon"\s+id="site-favicon"[^>]*>/i, favicon);
+  html = html.replace(/<link\s+rel="icon"\s+id="site-favicon"[^>]*>/i, () => favicon);
   const content = documentData ? renderDocumentSection(documentData) : `<section class="doc-section empty-document"><h1>还没有 Markdown 文档</h1><p>把 Markdown 文件放入文档目录，然后刷新页面。</p></section>`;
-  html = html.replace(/<article\s+class="doc-article"\s+id="doc-content"\s+aria-live="polite">[\s\S]*?<\/article>/i, `<article class="doc-article" id="doc-content" aria-live="polite">${content}</article>`);
+  html = html.replace(/<article\s+class="doc-article"\s+id="doc-content"\s+aria-live="polite">[\s\S]*?<\/article>/i, () => `<article class="doc-article" id="doc-content" aria-live="polite">${content}</article>`);
   if (Object.prototype.hasOwnProperty.call(options, "staticData")) {
     const staticData = `<script id="docskit-static-data" type="application/json">${serializeInlineJson(options.staticData)}</script>`;
     // 静态数据必须先于运行时脚本出现，浏览器解析脚本时才能直接进入离线模式。
     const runtimeScriptPattern = /<script\s+src="[^"]*script\.js"[^>]*><\/script>/i;
     if (runtimeScriptPattern.test(html)) html = html.replace(runtimeScriptPattern, (runtimeScript) => `${staticData}${runtimeScript}`);
-    else html = html.replace(/<\/body>/i, `${staticData}</body>`);
+    else html = html.replace(/<\/body>/i, () => `${staticData}</body>`);
   }
   return html;
 }

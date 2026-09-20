@@ -272,3 +272,11 @@ test("静态页面输出冲突在写入前被拒绝并保留旧产物", async (t
   assert.throws(() => assertUniqueDocumentOutputs([{ path: "guide.md" }, { path: "guide.html/child.md" }]), /输出路径冲突/);
   assert.doesNotThrow(() => assertUniqueDocumentOutputs([{ path: "index.md" }, { path: "guide/intro.markdown" }]));
 });
+
+
+test("Markdown 转义括号与 URL 编码可以组合使用", () => {
+  const target = markdown.markdownTarget("assets/file\\(v1\\)%20copy.md", "guide/index.md", "document");
+  assert.equal(target.docPath, "guide/assets/file(v1) copy.md");
+  const result = markdown.renderMarkdown("[guide]: assets/file\\(v1\\).md\n\n[guide]", "guide/index.md");
+  assert.match(result.html, /data-doc-path="guide\/assets\/file\(v1\)\.md"/);
+});

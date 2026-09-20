@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
+const { pipeline } = require("node:stream/promises");
 const { classifyAsset, fileNameFromPath, mediaMimeType, MEDIA_MIME_TYPES } = require("./media-types");
 const {
   CONFIG_FILE_NAME,
@@ -163,15 +164,15 @@ async function sendFile(response, filePath, options = {}) {
     response.end();
     return;
   }
-  await new Promise((resolve, reject) => {
-    const stream = fs.createReadStream(filePath, { start, end });
-    stream.once("error", (error) => {
-      if (response.headersSent) response.destroy(error);
-      reject(error);
-    });
-    response.once("finish", resolve);
-    stream.pipe(response);
-  });
+  // pipeline 在客户端中断时销毁源流并关闭文件描述符，避免请求永久悬挂。
+  if (response.destroyed) return;
+  try {
+    await pipeline(fs.createReadStream(filePath, { start, end }), response);
+  } catch (error) {
+    // 正常取消下载不应被记录为服务器故障；磁盘读取等其他错误仍向上传递。
+    if (response.destroyed && ["ERR_STREAM_PREMATURE_CLOSE", "ECONNRESET"].includes(error.code)) return;
+    throw error;
+  }
 }
 
 function assetMaxBytes(relativePath) {
