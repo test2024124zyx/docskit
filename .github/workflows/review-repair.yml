@@ -1,4 +1,4 @@
-name: Apply and verify review fixes
+name: Verify dependency security fixes
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   repair:
-    name: Verify review fixes on Node.js 24
+    name: Verify compatible security updates on Node.js 24
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -26,32 +26,27 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
-      - name: Confirm regressions fail on original code
-        shell: bash
+      - name: Update affected packages within existing version ranges
         run: |
-          set +e
-          node --test test/review-regressions.test.js > "$RUNNER_TEMP/review-baseline.log" 2>&1
-          status=$?
-          set -e
-          cat "$RUNNER_TEMP/review-baseline.log"
-          test "$status" -ne 0
-      - name: Apply source-verified fixes
-        run: |
-          python3 _review/apply.py
-          python3 _review/followup.py
+          npm update mermaid dompurify --ignore-scripts
+          git diff --exit-code -- package.json
+          npm ls mermaid dompurify
+      - name: Validate reproducible installation
+        run: npm ci
       - name: Build validation
         run: npm run build
       - name: Full test suite with regressions
         run: npm test
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-      - name: Commit verified source changes to repair branch
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Commit verified dependency lockfile to repair branch
         run: |
           git diff --check
+          git diff --stat
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add server-assets.js server.js markdown.js script.js static-build.js test/server-unit.test.js test/review-regressions.test.js
-          git commit -m 'fix: correct download cleanup, Markdown rendering and static build edge cases'
+          git add package-lock.json
+          git commit -m 'fix(deps): update Mermaid and DOMPurify security patches'
           git push origin HEAD:refs/heads/fix/review-20260920
           git rev-parse HEAD
           git rev-parse 'HEAD^{tree}'
