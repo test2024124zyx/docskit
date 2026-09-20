@@ -1,5 +1,6 @@
 name: Publish Docker image
 
+# 仅推送标签时执行；普通分支提交和拉取请求不触发。
 on:
   push:
     tags:
@@ -15,6 +16,7 @@ jobs:
   test:
     name: Test and validate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       # 发布镜像前先在干净环境执行构建校验、单测和依赖安全检查。
@@ -37,7 +39,7 @@ jobs:
         run: npm test
 
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --omit=dev --audit-level=moderate
 
   publish:
     name: Build and publish
