@@ -33,6 +33,7 @@ const PUBLIC_ROOT_FILES = Object.freeze([SKILL_INSTALL_PATH, SKILL_ARCHIVE_PATH]
 const STATIC_RESOURCE_PATHS = new Set([
   "/", "/index.html", "/script.js", "/styles.css", "/robots.txt", "/sitemap.xml",
   "/search-core.js", "/client-search.js", "/client-navigation.js", "/client-api.js",
+  "/client-api-renderer.js", "/client-api-snippets.js", "/client-api-view.js",
   ...PUBLIC_ROOT_FILES.map((relativePath) => `/${relativePath}`)
 ]);
 const PUBLIC_ASSET_EXTENSIONS = new Set([

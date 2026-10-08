@@ -1,110 +1,113 @@
 "use strict";
+
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-const vm = require("node:vm");
-const { pathToFileURL } = require("node:url");
-const { JSDOM } = require("jsdom");
-const vue = require("vue");
+const SwaggerClient = require("swagger-client");
 const api = require("../client-api");
+const { createSwaggerWindow, waitFor, button } = require("./helpers/swagger");
 
-const dependencyPath = (file) => path.join(__dirname, "..", "node_modules", "@scalar", file);
-const reference = { connectSources: ["https://api.docs.test"], spec: { openapi: "3.1.0", info: { title: "接口", version: "1" }, paths: {} } };
-const sendRequestPromise = import(pathToFileURL(dependencyPath("api-client/dist/v2/blocks/operation-block/helpers/send-request.js")).href).then((module) => module.sendRequest);
-
-function scalarLifecycle(window) {
-  // 直接执行锁定依赖的生命周期实现；跳过整棵界面依赖，只创建未挂载的真实 Vue 实例。
-  const source = fs.readFileSync(dependencyPath("api-reference/dist/standalone/lib/html-api.js"), "utf8")
-    .replace(/^import .+;\r?$/gm, "").replace(/^export .+;\r?$/gm, "");
-  const context = vm.createContext({ ...vue, document: window.document, HTMLStyleElement: window.HTMLStyleElement, AbortController: window.AbortController, ApiReference_default: {}, createHead: () => ({ install() {} }), console });
-  vm.runInContext(source, context);
-  return context.createApiReference;
-}
-
-test("主题切换遵循Scalar实际全量替换契约并保留规范和请求保护", async () => {
-  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/" }).window;
-  const create = scalarLifecycle(window);
-  let instance;
-  window.Scalar = { createApiReference(container, configuration) { instance = create(configuration); return instance; } };
-  try {
-    await api.mount(window.document.querySelector("#api"), reference);
-    const originalFetch = instance.getConfiguration().customFetch;
-    api.updateTheme("dark");
-    const configuration = instance.getConfiguration();
-    assert.deepEqual(await (await configuration.customFetch(configuration.url)).json(), reference.spec);
-    assert.equal(configuration.customFetch, originalFetch);
-    assert.equal(configuration.darkMode, true);
-    assert.equal(configuration.persistAuth, false);
-    assert.equal(configuration.telemetry, false);
-    assert.equal(configuration.agent.disabled, true);
-    assert.equal(configuration.proxyUrl, "");
-  } finally { api.unmount(); window.close(); }
+test("真实 Swagger 配置使用内存合同，禁用远程校验、URL配置覆盖和认证保存", async (t) => {
+  const { window, container, errors, networkRequests } = createSwaggerWindow(t);
+  const spec = { openapi: "3.1.0", info: { title: "安全配置", version: "1" }, paths: {} };
+  const config = api.createConfiguration({ spec, connectSources: [] }, { window });
+  const ui = window.SwaggerUIBundle({ ...config, domNode: container, syntaxHighlight: { activated: false } });
+  await waitFor(() => container.textContent.includes("安全配置"), "Swagger 未加载内存合同");
+  const normalized = ui.getConfigs();
+  // 真实浏览器 bundle 创建另一 JS realm 的对象，比较完整 JSON 合同而非对象原型。
+  assert.deepEqual(JSON.parse(JSON.stringify(normalized.spec)), spec);
+  assert.equal(normalized.validatorUrl, null);
+  assert.equal(normalized.persistAuthorization, false);
+  assert.equal(normalized.queryConfigEnabled, false);
+  assert.equal(normalized.deepLinking, false);
+  assert.equal(normalized.requestSnippetsEnabled, true);
+  assert.equal(normalized.requestInterceptor, config.requestInterceptor);
+  assert.deepEqual(networkRequests, []);
+  assert.deepEqual(errors, []);
 });
 
-test("Scalar真实发送流程经过保护层且保留Request的方法请求体和认证头", async () => {
-  const window = new JSDOM("", { url: "https://docs.test/" }).window;
-  let captured;
-  window.fetch = async (request, options) => {
-    captured = { request, options, body: await request.clone().text() };
-    return new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } });
+test("真实 Swagger UI 主动发送保留认证头及示例请求体，五种代码页签采用实际请求", async (t) => {
+  const { window, container, errors } = createSwaggerWindow(t);
+  const calls = [];
+  window.fetch = async (input, init) => {
+    calls.push({ url: String(input), method: init.method, headers: new Headers(init.headers), body: init.body, credentials: init.credentials, redirect: init.redirect });
+    return new Response('{"created":true}', { headers: { "Content-Type": "application/json" } });
   };
-  try {
-    const configuration = api.createConfiguration(reference, { window });
-    const sendRequest = await sendRequestPromise;
-    const [error, result] = await sendRequest({ isUsingProxy: false, requestPayload: ["https://api.docs.test/users", { method: "POST", headers: { Authorization: "Bearer test-token", "Content-Type": "application/json" }, body: '{"name":"张三"}', credentials: "include" }], customFetch: configuration.customFetch });
-    assert.equal(error, null);
-    assert.equal(result.response.status, 200);
-    assert.equal(result.response.data, '{"ok":true}');
-    assert.equal(captured.request.url, "https://api.docs.test/users");
-    assert.equal(captured.request.method, "POST");
-    assert.equal(captured.request.headers.get("Authorization"), "Bearer test-token");
-    assert.equal(captured.body, '{"name":"张三"}');
-    assert.equal(captured.options.credentials, "omit");
-    assert.equal(captured.options.redirect, "error");
-  } finally { window.close(); }
+  const payload = { $ref: "https://docs.test/payload.json", label: "请求原文" };
+  const spec = { openapi: "3.1.0", info: { title: "真实试调", version: "1" }, servers: [{ url: "./v1" }], security: [{ bearer: [] }], components: { securitySchemes: { bearer: { type: "http", scheme: "bearer" } } }, paths: {
+    "/items": { post: { operationId: "createItem", requestBody: { required: true, content: { "application/json": { schema: { type: "object" }, example: payload } } }, responses: { "200": { description: "成功" } } } }
+  } };
+  const config = api.createConfiguration({ spec, connectSources: [] }, { window });
+  const ui = window.SwaggerUIBundle({ ...config, domNode: container, docExpansion: "full", syntaxHighlight: { activated: false } });
+  await waitFor(() => button(container, "Try it out"), "Swagger 未显示调试入口");
+  assert.deepEqual(calls, []);
+  ui.preauthorizeApiKey("bearer", "test-token");
+  button(container, "Try it out").click();
+  await waitFor(() => button(container, "Execute"), "Swagger 未启用发送操作");
+  button(container, "Execute").click();
+  await waitFor(() => container.textContent.includes('"created": true'), "Swagger 未显示真实响应");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://docs.test/manual/v1/items");
+  assert.equal(calls[0].method.toUpperCase(), "POST");
+  assert.equal(calls[0].headers.get("Authorization"), "Bearer test-token");
+  assert.deepEqual(JSON.parse(calls[0].body), payload);
+  assert.equal(calls[0].credentials, "omit");
+  assert.equal(calls[0].redirect, "error");
+  assert.ok(container.textContent.includes("cURL (bash)"));
+  assert.ok(container.textContent.includes("cURL (PowerShell)"));
+  assert.ok(container.textContent.includes("cURL (CMD)"));
+  assert.ok(container.textContent.includes("https://docs.test/manual/v1/items"));
+  assert.ok(container.textContent.includes("Authorization: Bearer test-token"));
+  const snippets = container.querySelector(".request-snippets");
+  for (const [language, marker] of [["JavaScript (Node.js)", "const response = await fetch"], ["Python", "import requests"]]) {
+    const tab = Array.from(snippets.querySelectorAll(".btn")).find((node) => node.textContent.trim() === language);
+    assert.ok(tab, `未提供 ${language} 代码页签`);
+    tab.click();
+    await waitFor(() => snippets.querySelector("pre")?.textContent.includes(marker), `${language} 代码未显示`);
+    const code = snippets.querySelector("pre").textContent;
+    assert.ok(code.includes(calls[0].url));
+    assert.ok(code.includes("Bearer test-token"));
+    assert.ok(code.includes("https://docs.test/payload.json"));
+    assert.ok(code.includes("$ref"));
+    assert.ok(code.includes("请求原文"));
+  }
+  assert.equal(calls.length, 1, "切换代码页签不应发送请求");
+  assert.deepEqual(errors, []);
 });
 
-test("实际Scalar配置归一化保留cURL默认客户端及安全开关", async () => {
-  const window = new JSDOM("", { url: "https://docs.test/" }).window;
-  try {
-    const { apiReferenceConfigurationWithSourceSchema } = await import(pathToFileURL(dependencyPath("schemas/dist/api-reference/api-reference-configuration.js")).href);
-    const original = api.createConfiguration(reference, { window });
-    const normalized = apiReferenceConfigurationWithSourceSchema(original);
-    assert.deepEqual(normalized.defaultHttpClient, { targetKey: "shell", clientKey: "curl" });
-    assert.equal(normalized.customFetch, original.customFetch);
-    assert.equal(normalized.persistAuth, false);
-    assert.equal(normalized.proxyUrl, "");
-    assert.equal(normalized.telemetry, false);
-    assert.equal(normalized.agent.disabled, true);
-  } finally { window.close(); }
+test("Swagger 规范及外部引用加载在实际 HTTP 管线到达网络前拒绝", async (t) => {
+  const { window, networkRequests } = createSwaggerWindow(t);
+  const config = api.createConfiguration({ spec: {}, connectSources: ["https://api.test"] }, { window });
+  assert.equal(typeof config.requestInterceptor, "function");
+  for (const url of ["https://docs.test/private.json", "https://api.test/openapi.json"]) {
+    await assert.rejects(SwaggerClient.http({ url, loadSpec: true, requestInterceptor: config.requestInterceptor }), /规范|引用|自动/);
+  }
+  await assert.rejects(SwaggerClient.http({ url: "https://undeclared.test/token", method: "POST", requestInterceptor: config.requestInterceptor }), /未声明/);
+  assert.deepEqual(networkRequests, []);
 });
 
-test("Scalar已收到响应头仍读取正文时，切换文档会取消真实发送流程", async (context) => {
-  const logged = [];
-  context.mock.method(console, "error", (error) => logged.push(error));
-  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/" }).window;
-  let configuration;
-  let requestSignal;
-  let finishBody;
-  window.Scalar = { createApiReference(container, config) { configuration = config; return { destroy() {} }; } };
-  window.fetch = async (input, options) => {
-    requestSignal = options.signal;
-    return new Response(new ReadableStream({ start(controller) { finishBody = () => { controller.enqueue(new TextEncoder().encode("完成")); controller.close(); }; } }), { headers: { "Content-Type": "text/plain" } });
-  };
-  try {
-    await api.mount(window.document.querySelector("#api"), reference);
-    const sendRequest = await sendRequestPromise;
-    const pending = sendRequest({ isUsingProxy: false, requestPayload: ["https://api.docs.test/users", { method: "GET" }], customFetch: configuration.customFetch });
+test("Swagger 真实 HTTP 管线在响应头前及正文读取期间均可取消，取消后释放控制器", async (t) => {
+  for (const afterHeaders of [false, true]) {
+    const { window } = createSwaggerWindow(t);
+    const controllers = new Set();
+    let requestSignal;
+    let canceledBody = false;
+    window.fetch = (input, init) => {
+      requestSignal = init.signal;
+      if (afterHeaders) return Promise.resolve(new Response(new ReadableStream({ cancel() { canceledBody = true; } }), { headers: { "Content-Type": "text/plain" } }));
+      return new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("底层请求取消")), { once: true }));
+    };
+    const config = api.createConfiguration({ spec: {}, connectSources: [] }, { window, controllers });
+    assert.equal(typeof config.requestInterceptor, "function");
+    const pending = SwaggerClient.http({ url: "https://docs.test/slow", method: "GET", requestInterceptor: config.requestInterceptor });
+    const rejection = assert.rejects(pending, (error) => /取消|abort/i.test(error.responseError?.message || error.message));
+    await waitFor(() => requestSignal && controllers.size === 1, "请求未进入受控生命周期");
+    // 真实页面切换使用同一组控制器；等一轮微任务，确保正文测试已经开始消费流。
     await new Promise((resolve) => setImmediate(resolve));
-    api.unmount();
-    const aborted = requestSignal.aborted;
-    // 旧实现取消失效时主动结束假响应，确保失败测试不会留下挂起读取。
-    if (!aborted) finishBody();
-    const [error, result] = await pending;
-    assert.equal(aborted, true);
-    assert.ok(error);
-    assert.match(logged[0].message, /取消/);
-    assert.equal(result, null);
-  } finally { api.unmount(); window.close(); }
+    for (const controller of controllers) controller.abort();
+    await rejection;
+    assert.equal(requestSignal.aborted, true);
+    assert.equal(controllers.size, 0);
+    assert.equal(canceledBody, afterHeaders);
+    window.close();
+  }
 });

@@ -105,8 +105,8 @@ test("外部示例受同一文件、字节、节点和深度预算约束", async
   await assert.rejects(loadApiReference(root, "README.md", "api.json"), /文件数量/);
 });
 
-test("真实 Scalar 读取内联示例、未知 format 和 schema 声明时不自动发送网络请求", async (t) => {
-  const { createWorkspaceStore } = await import("@scalar/workspace-store/client");
+test("真实 Swagger 读取内联示例、未知 format 和 schema 声明时不自动发送网络请求", async (t) => {
+  const SwaggerClient = require("swagger-client");
   const spec = contract({ externalValue: "data.json" });
   spec.components = { schemas: { RemoteFormat: { type: "string", format: "https://example.org/format", $schema: "https://example.org/schema" } } };
   const payload = { externalValue: "https://example.org/payload" };
@@ -114,12 +114,9 @@ test("真实 Scalar 读取内联示例、未知 format 和 schema 声明时不�
   const result = await loadApiReference(root, "README.md", "api.json");
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url) => { calls.push(String(url)); throw new Error("组件不允许自动联网"); });
-  const store = createWorkspaceStore();
-  await store.addDocument({ name: "docs", document: result.spec });
-  const state = store.externalExamples("docs")(responseExample(result));
-  await state.load();
-  assert.equal(state.status, "loaded");
-  assert.deepEqual(state.value, payload);
+  const resolved = await SwaggerClient.resolve({ spec: result.spec, baseDoc: "https://docs.test/manual/api.html", requestInterceptor: (request) => { calls.push(request.url); throw new Error("组件不允许自动联网"); } });
+  assert.deepEqual(resolved.errors, []);
+  assert.deepEqual(responseExample(resolved).value, payload);
   assert.deepEqual(calls, []);
 });
 

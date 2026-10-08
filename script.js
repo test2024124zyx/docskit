@@ -710,7 +710,7 @@
     if (documentData.apiReference && window.DocsKitApi) {
       const apiContainer = document.createElement("section");
       apiContainer.className = "api-reference";
-      // Scalar 将 api-reference 视为遗留自动挂载入口，必须避开该保留标识。
+      // API 组件统一通过受控生命周期挂载，切换文档时释放请求与视图。
       apiContainer.id = "docskit-api-reference";
       article.querySelector("#doc-page").appendChild(apiContainer);
       mountApiReference(apiContainer, documentData.apiReference);

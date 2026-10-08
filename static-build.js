@@ -34,8 +34,8 @@ const { exportMarkdown, renderLlms } = require("./server-exports");
 const PROJECT_TEMPLATE_PATH = path.join(ROOT_DIR, "index.html");
 const BUILD_MARKER_NAME = ".docskit-build.json";
 const BUILD_MARKER = { generator: "docskit", format: 1 };
-const CLIENT_FILES = ["script.js", "styles.css", "search-core.js", "client-search.js", "client-navigation.js", "client-api.js"];
-const REVALIDATED_RESOURCES = [...CLIENT_FILES, "vendor/scalar.js", "vendor/mermaid.min.js", "vendor/highlight.min.js", "vendor/katex/katex.min.css"];
+const CLIENT_FILES = ["script.js", "styles.css", "search-core.js", "client-search.js", "client-navigation.js", "client-api.js", "client-api-renderer.js", "client-api-snippets.js", "client-api-view.js"];
+const REVALIDATED_RESOURCES = [...CLIENT_FILES, ...assets.SWAGGER_UI_FILES.filter((file) => /\.(js|css)$/.test(file)).map((file) => `vendor/${file}`), "vendor/api-renderer.js", "vendor/mermaid.min.js", "vendor/highlight.min.js", "vendor/katex/katex.min.css"];
 const STATIC_HEADERS = [
   "/*",
   "  X-Content-Type-Options: nosniff",
@@ -191,7 +191,7 @@ function rewriteTemplate(template, base) {
   return template
     .replace(/href="styles\.css"/i, `href="${publicPath(base, "styles.css")}"`)
     .replace(/href="\/vendor\/katex\/katex\.min\.css"/i, `href="${publicPath(base, "vendor/katex/katex.min.css")}"`)
-    .replace(/src="((?:script|search-core|client-search|client-navigation|client-api)\.js)"/gi, (_, name) => `src="${publicPath(base, name)}"`)
+    .replace(/src="((?:script|search-core|client-search|client-navigation|client-api(?:-renderer|-snippets|-view)?)\.js)"/gi, (_, name) => `src="${publicPath(base, name)}"`)
     .replace(/(<a\s+class="brand"\s+href=")[^"]*"/i, `$1${publicPath(base, "")}"`);
 }
 
@@ -208,8 +208,12 @@ async function copyProjectRuntime(outputDir) {
   const katexSource = path.join(ROOT_DIR, "node_modules", "katex", "dist");
   await fsp.mkdir(path.join(outputDir, "vendor"), { recursive: true });
   await fsp.copyFile(mermaidSource, path.join(outputDir, "vendor", "mermaid.min.js"));
-  await fsp.copyFile(path.join(ROOT_DIR, "node_modules", "@scalar", "api-reference", "dist", "browser", "standalone.js"), path.join(outputDir, "vendor", "scalar.js"));
+  for (const file of assets.SWAGGER_UI_FILES) {
+    await fsp.copyFile(path.join(ROOT_DIR, "node_modules", "swagger-ui-dist", file), path.join(outputDir, "vendor", file));
+  }
   buildBundle({ outputPath: path.join(outputDir, "vendor", "highlight.min.js") });
+  // 渲染器在本次暂存目录生成，避免复用其他构建留下的旧包。
+  await writeText(path.join(outputDir, "vendor", "api-renderer.js"), require("./build-api-renderer").createBundle().code);
   await fsp.cp(katexSource, path.join(outputDir, "vendor", "katex"), { recursive: true });
 }
 

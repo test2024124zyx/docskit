@@ -9,6 +9,8 @@ icon: code-2
 
 DocsKit 支持 OpenAPI 3.0 和 3.1 的 JSON、YAML 文件。在 Markdown 的 front matter 中设置 `openapi`，页面会保留作者编写的说明，并展示接口参数、模型、认证、响应及多语言代码示例。读者可以打开请求面板，填写参数后主动发送请求。
 
+在线面板使用本地 Swagger UI。展开接口后点击 `Try it out` 编辑参数，再点击 `Execute` 发送请求；响应区会显示耗时、状态码、响应头和正文，以及本次请求的 cURL、JavaScript、Python 示例。JavaScript 示例使用 Node.js 内置 `fetch`，可保存为 `.mjs` 运行；Python 示例需要 `requests`。上传文件时，示例使用所选文件名，运行前应把对应文件放在脚本工作目录。
+
 ## 绑定合同
 
 例如本仓库的[搜索接口](../api/http/search.md)绑定 `docs/api/specs/search.yaml`，它描述的是真实的 DocsKit 动态服务接口。
@@ -36,6 +38,8 @@ API 页的 Markdown 复制、下载及 `llms-full.txt` 会附带完整 OpenAPI �
 使用 OpenAPI 的 `servers` 描述可选环境，也支持路径和操作级服务器设置。绝对地址必须使用 HTTP 或 HTTPS；相对地址使用当前站点。服务器变量必须有默认值，可通过有限的 `enum` 声明可选主机；单个服务器的组合上限为 64。浏览器连接策略只允许合同声明的来源，未声明的新主机不会自动放行。
 
 认证按 OpenAPI `securitySchemes` 和 `security` 配置，读者在请求面板中填写。OAuth2 合同明确声明的 `tokenUrl` 和 `refreshUrl` 也会加入连接许可，可以使用独立认证域；这些地址同样只允许无内嵌凭据的 HTTP(S) URL，相对地址沿用当前站点或所选服务器的来源。认证服务仍需允许浏览器跨域请求。
+
+OAuth2 授权码流程使用本站的 `/vendor/oauth2-redirect.html` 回调页；静态站点带部署基路径，例如 `/reference/vendor/oauth2-redirect.html`。请在身份服务中登记文档站点完整的同源回调 URL。回调页及其外链脚本随动态服务和静态产物一起提供，无需放宽脚本 CSP。
 
 OpenID Connect 的动态发现不会扩展连接许可：仅声明 `openIdConnectUrl` 不会授权新的来源，发现文档返回的其他来源也不会自动放行。需要独立身份域时，可在 OAuth2 合同中明确声明令牌和刷新地址，或在外部完成认证后按 HTTP Bearer 方案填写令牌。
 

@@ -738,6 +738,7 @@ function createServer(options = {}) {
 function startServer() {
   // 显式启动时才准备浏览器产物，导入业务模块与单测不产生构建副作用。
   require("./build-highlight").ensureBundle();
+  require("./build-api-renderer").ensureBundle();
   return startServerRuntime({ createServer, closeDocumentIndexWatchers, port, host, cliArgs, resolveFromRoot });
 }
 

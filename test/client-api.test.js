@@ -3,176 +3,153 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { JSDOM } = require("jsdom");
 const api = require("../client-api");
+const renderer = require("../client-api-renderer");
+const reference = { connectSources: ["https://api.docs.test"], spec: { openapi: "3.1.0", info: { title: "查询接口", version: "1" }, servers: [{ url: "https://api.docs.test" }], paths: {} } };
 
-const reference = { title: "查询接口", connectSources: ["https://api.docs.test"], spec: { openapi: "3.1.0", info: { title: "查询接口", version: "1" }, servers: [{ url: "https://api.docs.test" }], paths: {} } };
+function fixture(t, cold = false) {
+  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/manual/" }).window;
+  const container = window.document.querySelector("#api");
+  const state = { mounted: 0, unmounted: 0, configuration: null };
+  const factory = (configuration) => { state.configuration = configuration; return {}; };
+  t.mock.method(renderer, "create", () => ({ plugin() { return {}; }, async mount() { state.mounted += 1; container.textContent = "接口已就绪"; }, unmount() { state.unmounted += 1; } }));
+  if (!cold) {
+    window.SwaggerUIBundle = factory;
+    const style = window.document.createElement("link");
+    style.dataset.docskitSwaggerStyle = "true";
+    style.dataset.loaded = "true";
+    window.document.head.append(style);
+  }
+  const load = () => {
+    window.SwaggerUIBundle = factory;
+    window.document.querySelector('script[data-docskit-swagger]')?.onload();
+    window.document.querySelector('link[data-docskit-swagger-style]')?.onload();
+  };
+  t.after(() => { api.unmount(); window.close(); });
+  return { window, container, state, factory, load };
+}
 
-test("API组件只使用本地传入规范，禁用代理、遥测、外部AI及凭据保存", async () => {
-  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/" }).window;
-  const config = api.createConfiguration(reference, { window, theme: "dark" });
-  assert.equal(config.content, undefined);
-  assert.equal(new URL(config.url).origin, window.location.origin);
-  assert.deepEqual(await (await config.customFetch(config.url, { headers: undefined })).json(), reference.spec);
-  assert.equal(config.persistAuth, false);
-  assert.equal(config.telemetry, false);
-  assert.equal(config.agent.disabled, true);
-  assert.equal(config.mcp.disabled, true);
-  assert.equal(config.proxyUrl, "");
-  assert.equal(config.withDefaultFonts, false);
-  assert.equal(config.localization.locale, "zh-CN");
-  assert.equal(config.darkMode, true);
-  assert.deepEqual(config.defaultHttpClient, { targetKey: "shell", clientKey: "curl" });
-  window.close();
+test("内存合同保持原文，认证回调与静态部署基址一致", (t) => {
+  const { window } = fixture(t);
+  const config = api.createConfiguration(reference, { window, base: "/manual/" });
+  assert.deepEqual(config.spec, reference.spec);
+  assert.notEqual(config.spec, reference.spec);
+  assert.equal(config.oauth2RedirectUrl, "https://docs.test/manual/vendor/oauth2-redirect.html");
+  for (const key of ["persistAuthorization", "queryConfigEnabled", "deepLinking", "withCredentials"]) assert.equal(config[key], false);
+  assert.equal(config.validatorUrl, null);
 });
 
-test("请求由调用动作触发，默认不带浏览器凭据，拒绝非HTTP地址和跳转", async () => {
-  const window = new JSDOM("", { url: "https://docs.test/" }).window;
+test("主动请求保留认证头，拒绝隐式Cookie、重定向和非法来源", async (t) => {
+  const { window } = fixture(t);
   const calls = [];
   window.fetch = async (input, init) => { calls.push({ input, init }); return { ok: true }; };
   const config = api.createConfiguration(reference, { window });
   assert.equal(calls.length, 0);
   await config.customFetch("https://api.docs.test/users", { method: "GET", credentials: "include", headers: { Authorization: "Bearer test-token" } });
-  assert.equal(calls.length, 1);
   assert.equal(calls[0].init.credentials, "omit");
   assert.equal(calls[0].init.redirect, "error");
   assert.equal(calls[0].init.headers.Authorization, "Bearer test-token");
-  await assert.rejects(() => config.customFetch("file:///private"), /HTTP/);
-  await assert.rejects(() => config.customFetch("https://user:password@api.docs.test/users"), /用户名/);
-  window.close();
+  await config.customFetch("/api/search");
+  for (const [url, error] of [["file:///private", /HTTP/], ["https://user:password@api.docs.test/users", /用户名/], ["https://api.docs.test.evil.test/", /未声明/]]) await assert.rejects(config.customFetch(url), error);
+  assert.equal(calls.length, 2);
+  await assert.rejects(api.createConfiguration({ spec: reference.spec }, { window }).customFetch("https://api.docs.test/"), /未声明/);
 });
 
-test("切换文档销毁API实例并取消仍在进行的请求", async () => {
-  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/" }).window;
-  let configuration;
-  let destroyed = false;
-  window.Scalar = { createApiReference(container, config) { configuration = config; return { destroy() { destroyed = true; } }; } };
-  window.fetch = (input, options) => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(Object.assign(new Error("请求已取消"), { name: "AbortError" })), { once: true }));
-  await api.mount(window.document.querySelector("#api"), reference);
-  const request = configuration.customFetch("https://api.docs.test/users");
-  const rejected = assert.rejects(request, /取消/);
+test("离开页面正式卸载视图、取消请求，并拒绝迟到的发送动作", async (t) => {
+  const { window, container, state } = fixture(t);
+  window.fetch = (input, options) => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("底层已取消")), { once: true }));
+  await api.mount(container, reference);
+  const rejected = assert.rejects(state.configuration.customFetch("https://api.docs.test/users"), /取消/);
   api.unmount();
   await rejected;
-  assert.equal(destroyed, true);
-  window.close();
+  assert.equal(state.unmounted, 1);
+  assert.equal(container.childElementCount, 0);
+  await assert.rejects(state.configuration.customFetch("https://api.docs.test/users"), /页面已关闭/);
 });
 
-test("组件加载失败显示重试，页面切换后迟到的加载不会挂载旧API", async () => {
-  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/manual/" }).window;
-  const container = window.document.querySelector("#api");
-  const mounting = api.mount(container, reference, { base: "/manual/" });
-  const script = window.document.querySelector('script[data-docskit-scalar]');
-  assert.equal(script.getAttribute("src"), "/manual/vendor/scalar.js");
-  script.onerror();
-  await mounting;
-  assert.match(container.textContent, /重新加载/);
-  const retry = api.mount(container, reference, { base: "/manual/" });
-  let mounted = false;
-  window.Scalar = { createApiReference() { mounted = true; return { destroy() {} }; } };
-  const pending = window.document.querySelector('script[data-docskit-scalar]');
-  api.unmount();
-  pending.onload();
-  await retry;
-  assert.equal(mounted, false);
-  window.close();
-});
-
-test("API网络错误提供可行动的信息，调用方取消立即生效", async () => {
-  const window = new JSDOM("", { url: "https://docs.test/" }).window;
-  window.fetch = async () => { throw new TypeError("Failed to fetch"); };
-  const config = api.createConfiguration(reference, { window });
-  await assert.rejects(() => config.customFetch("https://api.docs.test/users"), /跨域/);
-  const controller = new window.AbortController();
-  controller.abort();
-  await assert.rejects(() => config.customFetch("https://api.docs.test/users", { signal: controller.signal }), /取消/);
-  window.close();
-});
-
-test("主题更新保留组件实例，主动取消和超时都会中止底层请求", async () => {
-  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/" }).window;
-  const updates = [];
-  window.Scalar = { createApiReference() { return { updateConfiguration(config) { updates.push(config); }, destroy() {} }; } };
-  await api.mount(window.document.querySelector("#api"), reference);
+test("样式和脚本全部就绪才挂载，切换主题不重建表单", async (t) => {
+  const { window, container, state, factory } = fixture(t, true);
+  const pending = api.mount(container, reference, { base: "/manual/", theme: "light" });
+  const script = window.document.querySelector('script[data-docskit-swagger]');
+  assert.equal(script.getAttribute("src"), "/manual/vendor/swagger-ui-bundle.js");
   api.updateTheme("dark");
-  assert.equal(window.document.body.classList.contains("dark-mode"), true);
+  window.SwaggerUIBundle = factory;
+  script.onload();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.mounted, 0);
+  window.document.querySelector('link[data-docskit-swagger-style]').onload();
+  await pending;
+  assert.equal(window.document.documentElement.classList.contains("dark-mode"), true);
+  const input = window.document.createElement("input");
+  input.value = "未发送的参数";
+  container.append(input);
   api.updateTheme("light");
-  assert.equal(window.document.body.classList.contains("light-mode"), true);
-  assert.deepEqual(updates.map((config) => config.darkMode), [true, false]);
-  assert.equal(updates[1].url, updates[0].url);
-  assert.deepEqual(await (await updates[1].customFetch(updates[1].url)).json(), reference.spec);
-  assert.equal(updates[1].persistAuth, false);
-  assert.equal(typeof updates[1].customFetch, "function");
+  assert.equal(window.document.documentElement.classList.contains("dark-mode"), false);
+  assert.equal(input.value, "未发送的参数");
+  assert.equal(state.mounted, 1);
+});
+
+test("脚本和样式失败都能重试，迟到加载不会重挂已经离开的文档", async (t) => {
+  for (const resource of ["script[data-docskit-swagger]", "link[data-docskit-swagger-style]"]) {
+    const { window, container, state, load } = fixture(t, true);
+    const pending = api.mount(container, reference, { theme: "light" });
+    window.document.querySelector(resource).onerror();
+    await pending;
+    assert.match(container.textContent, /重新加载/);
+    api.updateTheme("dark");
+    container.querySelector("button").click();
+    load();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(state.mounted, 1);
+    assert.equal(window.document.documentElement.classList.contains("dark-mode"), true);
+    api.unmount();
+    window.close();
+  }
+  const { container, state, load } = fixture(t, true);
+  const late = api.mount(container, reference);
+  api.unmount();
+  load();
+  await late;
+  assert.equal(state.mounted, 0);
+});
+
+test("组件初始化失败可恢复，库加载超时给出明确信息", async (t) => {
+  const { window, container, factory } = fixture(t);
+  window.SwaggerUIBundle = () => { throw new Error("规范展示失败"); };
+  await api.mount(container, reference);
+  assert.match(container.textContent, /规范展示失败/);
+  window.SwaggerUIBundle = factory;
+  container.querySelector("button").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(container.textContent, "接口已就绪");
+  assert.equal(container.hasAttribute("aria-busy"), false);
+  api.unmount();
+  const cold = fixture(t, true);
+  let timeout;
+  cold.window.setTimeout = (callback) => { timeout = callback; return 1; };
+  const pending = api.mount(cold.container, reference);
+  timeout();
+  await pending;
+  assert.match(cold.container.textContent, /加载超时/);
+});
+
+test("网络错误、调用方取消及超时都提供可操作错误并释放控制器", async (t) => {
+  const { window } = fixture(t);
+  const controllers = new Set();
+  const config = api.createConfiguration(reference, { window, controllers });
+  window.fetch = async () => { throw new TypeError("Failed to fetch"); };
+  await assert.rejects(config.customFetch("https://api.docs.test/users"), /跨域/);
+  const aborted = new window.AbortController();
+  aborted.abort();
+  await assert.rejects(config.customFetch("https://api.docs.test/users", { signal: aborted.signal }), /取消/);
   window.fetch = (input, options) => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("底层取消")), { once: true }));
-  const config = api.createConfiguration(reference, { window });
   const controller = new window.AbortController();
-  const canceled = config.customFetch("https://api.docs.test/", { signal: controller.signal });
-  const rejection = assert.rejects(canceled, /取消/);
+  const rejection = assert.rejects(config.customFetch("https://api.docs.test/", { signal: controller.signal }), /取消/);
   controller.abort();
   await rejection;
   let timeout;
   window.setTimeout = (callback) => { timeout = callback; return 1; };
-  const pending = config.customFetch("https://api.docs.test/");
-  const timedOut = assert.rejects(pending, /30 秒/);
+  const timedOut = assert.rejects(config.customFetch("https://api.docs.test/"), /30 秒/);
   timeout();
   await timedOut;
-  api.unmount();
-  assert.equal(window.document.body.classList.contains("light-mode"), false);
-  api.updateTheme("dark");
-  window.close();
-});
-
-test("API初始化失败可以通过重试按钮恢复", async () => {
-  const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/" }).window;
-  const container = window.document.querySelector("#api");
-  window.Scalar = { createApiReference() { throw new Error("规范展示失败"); } };
-  await api.mount(container, reference);
-  assert.match(container.textContent, /规范展示失败/);
-  window.Scalar.createApiReference = () => { container.textContent = "已恢复"; return { destroy() {} }; };
-  container.querySelector("button").click();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(container.textContent, "已恢复");
-  assert.equal(container.hasAttribute("aria-busy"), false);
-  api.unmount();
-  window.close();
-});
-
-test("在线调试仅允许当前站点和已验证合同声明的来源", async () => {
-  const window = new JSDOM("", { url: "https://docs.test/manual/" }).window;
-  const calls = [];
-  window.fetch = async (input) => { calls.push(input); return { ok: true }; };
-  const config = api.createConfiguration(reference, { window });
-  await config.customFetch("/api/search");
-  await assert.rejects(() => config.customFetch("https://undeclared.test/"), /未声明/);
-  await assert.rejects(() => config.customFetch("https://api.docs.test.evil.test/"), /未声明/);
-  assert.equal(calls.length, 1);
-  const legacy = api.createConfiguration({ spec: reference.spec }, { window });
-  await assert.rejects(() => legacy.customFetch("https://api.docs.test/"), /未声明/);
-  window.close();
-});
-
-test("库冷加载和加载失败后重试都采用读者最近选择的主题", async (t) => {
-  for (const failFirst of [false, true]) {
-    const window = new JSDOM('<div id="api"></div>', { url: "https://docs.test/" }).window;
-    const container = window.document.querySelector("#api");
-    t.after(() => { api.unmount(); window.close(); });
-    const pending = api.mount(container, reference, { theme: "light" });
-    api.updateTheme("dark");
-    let script = window.document.querySelector('script[data-docskit-scalar]');
-    if (failFirst) {
-      script.onerror();
-      await pending;
-      api.updateTheme("light");
-      api.updateTheme("dark");
-      container.querySelector("button").click();
-      script = window.document.querySelector('script[data-docskit-scalar]');
-    }
-    let initial;
-    window.Scalar = { createApiReference(element, config) { initial = config; return { destroy() {} }; } };
-    script.onload();
-    await pending;
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(initial.darkMode, true);
-    assert.equal(window.document.body.classList.contains("dark-mode"), true);
-    assert.equal(window.document.body.classList.contains("light-mode"), false);
-    api.unmount();
-    window.close();
-  }
+  assert.equal(controllers.size, 0);
 });

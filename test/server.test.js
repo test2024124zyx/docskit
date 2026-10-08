@@ -130,6 +130,22 @@ test("健康检查不依赖配置文件和文档目录", async () => {
   });
 });
 
+test("启动生成 API 渲染器产物并提供适配和示例生成模块", async () => {
+  await withServer({}, async ({ baseUrl }) => {
+    const renderer = await fetch(`${baseUrl}/vendor/api-renderer.js`);
+    assert.equal(renderer.status, 200);
+    assert.match(renderer.headers.get("content-type"), /^text\/javascript/);
+    assert.equal(renderer.headers.get("cache-control"), "no-cache, must-revalidate");
+    assert.equal(await renderer.text(), require("../build-api-renderer").createBundle().code);
+    for (const resource of ["client-api-renderer.js", "client-api-snippets.js", "client-api-view.js"]) {
+      const response = await fetch(`${baseUrl}/${resource}`);
+      assert.equal(response.status, 200, resource);
+      assert.equal(response.headers.get("cache-control"), "no-cache, must-revalidate", resource);
+      assert.equal(await response.text(), await fsp.readFile(path.join(PROJECT_DIR, resource), "utf8"));
+    }
+  });
+});
+
 test("缺少配置时使用默认导航和稳定内置图标", async () => {
   await withServer({}, async ({ baseUrl }) => {
     const payload = await requestJson(baseUrl, "/api/bootstrap");

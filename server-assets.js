@@ -57,11 +57,14 @@ const MIME_TYPES = {
 
 // SVG 仍作为图片直接提供，但禁止脚本、对象和外部资源，降低不可信 SVG 的存储型 XSS 风险。
 const SVG_ASSET_CONTENT_SECURITY_POLICY = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; script-src 'none'; object-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src data:; sandbox";
+const SWAGGER_UI_FILES = Object.freeze(["swagger-ui-bundle.js", "swagger-ui.css", "oauth2-redirect.html", "oauth2-redirect.js"]);
 
 function vendorResourcePath(pathname) {
   if (pathname === "/vendor/highlight.min.js") return "dist/vendor/highlight.min.js";
+  if (pathname === "/vendor/api-renderer.js") return "dist/vendor/api-renderer.js";
   if (pathname === "/vendor/mermaid.min.js") return "node_modules/mermaid/dist/mermaid.min.js";
-  if (pathname === "/vendor/scalar.js") return "node_modules/@scalar/api-reference/dist/browser/standalone.js";
+  const swaggerFile = pathname.startsWith("/vendor/") ? pathname.slice("/vendor/".length) : "";
+  if (SWAGGER_UI_FILES.includes(swaggerFile)) return `node_modules/swagger-ui-dist/${swaggerFile}`;
   if (pathname.startsWith("/vendor/katex/")) {
     let relative;
     try { relative = decodeURIComponent(pathname.slice("/vendor/katex/".length)); } catch (error) { return ""; }
@@ -199,6 +202,7 @@ function assetMaxBytes(relativePath) {
 }
 
 module.exports = {
+  SWAGGER_UI_FILES,
   vendorResourcePath,
   isPublicAssetPath,
   responseHeaders,
