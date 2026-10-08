@@ -22,50 +22,54 @@ function resolveModule(id, fromDir) {
   return require.resolve(id, { paths: [fromDir] });
 }
 
-function buildBundle() {
-  const hljsDir = path.join(ROOT_DIR, "node_modules", "highlight.js", "lib");
-  const modules = {};
-  const resolved = new Set();
+function createBundle(entryPath = path.join(ROOT_DIR, "node_modules", "highlight.js", "lib", "common.js")) {
+  const moduleRoot = path.dirname(entryPath);
+  const modules = new Map();
+
+  // 使用相对模块标识及精确依赖表，避免 Windows 分隔符与同名文件冲突。
+  const moduleId = (filePath) => path.relative(moduleRoot, filePath).split(path.sep).join("/");
 
   function collect(id, fromDir) {
     const filePath = resolveModule(id, fromDir);
-    if (resolved.has(filePath)) return;
-    resolved.add(filePath);
+    const key = moduleId(filePath);
+    if (modules.has(key)) return key;
     const dir = path.dirname(filePath);
     const source = fs.readFileSync(filePath, "utf8");
+    const dependencies = {};
+    modules.set(key, { source, dependencies });
     const requireRegex = /require\(['"]([^'"]+)['"]\)/g;
     let match;
     while ((match = requireRegex.exec(source)) !== null) {
-      try { collect(match[1], dir); } catch (e) { /* skip non-local */ }
+      dependencies[match[1]] = collect(match[1], dir);
     }
-    modules[filePath] = source;
+    return key;
   }
 
-  collect("./common", hljsDir);
+  const entryId = collect(entryPath, moduleRoot);
 
-  // 生成 IIFE bundle
+  // 生成无需浏览器模块加载器的独立产物，缺失依赖必须在构建时失败。
   let output = "(function() {\nvar modules = {};\nvar cache = {};\nfunction req(id) {\n";
   output += "  if (cache[id]) return cache[id].exports;\n";
+  output += "  if (!modules[id]) throw new Error('Module not found: ' + id);\n";
   output += "  var mod = { exports: {} };\n  cache[id] = mod;\n";
-  output += "  modules[id](mod, mod.exports, function(dep) {\n";
-  output += "    var keys = Object.keys(modules);\n";
-  output += "    for (var i = 0; i < keys.length; i++) {\n";
-  output += "      if (keys[i].endsWith(dep.replace('./', '/') + '.js') || keys[i].endsWith('/' + dep + '.js') || keys[i] === dep) return req(keys[i]);\n";
-  output += "    }\n    throw new Error('Module not found: ' + dep);\n  });\n";
+  output += "  modules[id][0](mod, mod.exports, function(dep) { return req(modules[id][1][dep]); });\n";
   output += "  return mod.exports;\n}\n";
 
-  for (const [filePath, source] of Object.entries(modules)) {
-    output += `modules[${JSON.stringify(filePath)}] = function(module, exports, require) {\n${source}\n};\n`;
+  for (const [id, { source, dependencies }] of modules) {
+    output += `modules[${JSON.stringify(id)}] = [function(module, exports, require) {\n${source}\n}, ${JSON.stringify(dependencies)}];\n`;
   }
 
-  const entryPath = Object.keys(modules).find(p => p.endsWith("common.js"));
-  output += `var hljs = req(${JSON.stringify(entryPath)});\n`;
+  output += `var hljs = req(${JSON.stringify(entryId)});\n`;
   output += 'if (typeof window !== "undefined") window.hljs = hljs;\n';
   output += "})();\n";
+  return { code: output, size: Buffer.byteLength(output), modules: modules.size };
+}
 
-  fs.mkdirSync(path.dirname(OUTPUT_PATH), { recursive: true });
-  fs.writeFileSync(OUTPUT_PATH, output);
-  return { size: output.length, modules: Object.keys(modules).length };
+function buildBundle({ outputPath = OUTPUT_PATH } = {}) {
+  const result = createBundle();
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, result.code);
+  return { size: result.size, modules: result.modules };
 }
 
 // 检查是否需要重建
@@ -75,7 +79,7 @@ function needsBuild() {
   if (!fs.existsSync(hljsPkg)) return false;
   const bundleMtime = fs.statSync(OUTPUT_PATH).mtimeMs;
   const pkgMtime = fs.statSync(hljsPkg).mtimeMs;
-  return pkgMtime > bundleMtime;
+  return pkgMtime > bundleMtime || fs.statSync(__filename).mtimeMs > bundleMtime;
 }
 
 function ensureBundle() {
@@ -85,7 +89,7 @@ function ensureBundle() {
   return true;
 }
 
-module.exports = { buildBundle, ensureBundle };
+module.exports = { createBundle, buildBundle, ensureBundle };
 
 if (require.main === module) {
   const result = buildBundle();

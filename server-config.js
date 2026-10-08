@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
 const { AUDIO_EXTENSIONS, DOWNLOAD_EXTENSIONS, VIDEO_EXTENSIONS } = require("./media-types");
+const { normalizeSiteUrl } = require("./server-seo");
 
 const ROOT_DIR = __dirname;
 const DEFAULT_PORT = 3000;
@@ -22,11 +23,16 @@ const MAX_DIRECTORY_DEPTH = 5;
 const MAX_DOCUMENT_COUNT = 1000;
 const MAX_DIRECTORY_WATCHERS = 256;
 const SEARCH_CACHE_SIZE = 50;
+const DEFAULT_INDEX_BYTES = 64 * 1024 * 1024;
+const DEFAULT_RENDER_CACHE_BYTES = 32 * 1024 * 1024;
+const INDEX_RETRY_DELAY_MS = 2000;
+const MAX_RENDER_CACHE_ENTRIES = 200;
 const SKILL_INSTALL_PATH = "skills/install.md";
 const SKILL_ARCHIVE_PATH = "docskit-doc-writing.zip";
 const PUBLIC_ROOT_FILES = Object.freeze([SKILL_INSTALL_PATH, SKILL_ARCHIVE_PATH]);
 const STATIC_RESOURCE_PATHS = new Set([
   "/", "/index.html", "/script.js", "/styles.css", "/robots.txt", "/sitemap.xml",
+  "/search-core.js", "/client-search.js", "/client-navigation.js", "/client-api.js",
   ...PUBLIC_ROOT_FILES.map((relativePath) => `/${relativePath}`)
 ]);
 const PUBLIC_ASSET_EXTENSIONS = new Set([
@@ -63,7 +69,10 @@ const DEFAULT_CODE_CONFIG = {
 };
 const DEFAULT_CONFIG = {
   docsDir: DEFAULT_DOCS_DIR,
+  home: "",
+  limits: { indexBytes: DEFAULT_INDEX_BYTES, renderCacheBytes: DEFAULT_RENDER_CACHE_BYTES },
   site: {
+    url: "",
     brand: { name: "docs", accent: "kit" },
     context: "文档",
     eyebrow: "DOCUMENTATION",
@@ -206,6 +215,20 @@ function normalizeRelative(value) {
   return String(value || "").replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
+function normalizeHome(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string" || value.includes("\0") || value.split(/[\\/]/).includes("..") || !/\.(md|markdown)$/i.test(value)) {
+    throw new Error("首页必须是文档目录中的 Markdown 路径");
+  }
+  return normalizeRelative(value);
+}
+
+function normalizeByteBudget(value, fallback) {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error("字节预算必须为正整数");
+  return value;
+}
+
 function normalizeTopbarLinks(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
@@ -248,6 +271,7 @@ function mergeConfig(source) {
   const topbar = isObject(input.topbar) ? input.topbar : {};
   const markdownInput = isObject(input.markdown) ? input.markdown : {};
   const sidebarInput = isObject(input.sidebar) ? input.sidebar : {};
+  const limits = isObject(input.limits) ? input.limits : {};
   const sidebar = {
     ...DEFAULT_CONFIG.sidebar,
     ...sidebarInput,
@@ -260,12 +284,18 @@ function mergeConfig(source) {
   return {
     ...DEFAULT_CONFIG,
     ...input,
+    home: normalizeHome(input.home),
+    limits: {
+      indexBytes: normalizeByteBudget(limits.indexBytes, DEFAULT_INDEX_BYTES),
+      renderCacheBytes: normalizeByteBudget(limits.renderCacheBytes, DEFAULT_RENDER_CACHE_BYTES)
+    },
     site: {
       ...DEFAULT_CONFIG.site,
       ...siteInput,
+      url: normalizeSiteUrl(siteInput.url),
       brand: { ...DEFAULT_CONFIG.site.brand, ...brand },
       themeColor: normalizeColorValue(siteInput.themeColor),
-      seo: { ...DEFAULT_CONFIG.site.seo, ...seo },
+      seo: { ...DEFAULT_CONFIG.site.seo, ...seo, themeColor: normalizeColorValue(seo.themeColor) },
       footer: {
         ...DEFAULT_CONFIG.site.footer,
         ...footer,
@@ -303,32 +333,49 @@ function configFileSignature(stat) {
 }
 
 async function readConfigFile(configPath) {
-  let fileSignature = "missing";
-  let fileStat;
+  let fileSignature;
+  let readError;
   try {
-    fileStat = await fsp.stat(configPath);
+    const fileStat = await fsp.stat(configPath);
     fileSignature = configFileSignature(fileStat);
   } catch (error) {
     fileSignature = `${error.code || "error"}:${error.message}`;
-    const cached = configCache.get(configPath);
-    if (cached && cached.signature === fileSignature) return cached.value;
-    if (error.code !== "ENOENT") console.warn(`无法读取配置文件 ${configPath}，将使用默认配置：${error.message}`);
-    const value = {};
-    configCache.set(configPath, { signature: fileSignature, value });
-    return value;
+    readError = error;
   }
-
   const cached = configCache.get(configPath);
-  if (cached && cached.signature === fileSignature) return cached.value;
-
-  let value = {};
-  try {
-    value = JSON.parse(await fsp.readFile(configPath, "utf8"));
-  } catch (error) {
-    console.warn(`配置文件 ${configPath} 无法解析，将使用默认配置：${error.message}`);
+  if (cached && cached.signature === fileSignature) {
+    if (cached.error && !cached.valid) throw cached.error;
+    return cached.value;
   }
-  configCache.set(configPath, { signature: fileSignature, value });
-  return value;
+  try {
+    if (readError) throw readError;
+    const value = JSON.parse(await fsp.readFile(configPath, "utf8"));
+    if (!isObject(value)) throw new Error("配置根节点必须是对象");
+    if (value.docsDir !== undefined && (typeof value.docsDir !== "string" || !value.docsDir.trim() || value.docsDir.includes("\0"))) {
+      throw new Error("docsDir 必须是非空目录路径");
+    }
+    // 完整校验之后再替换已发布配置，避免无效热更新切回默认文档目录。
+    mergeConfig(value);
+    configCache.set(configPath, { signature: fileSignature, value, valid: true, error: null });
+    return value;
+  } catch (error) {
+    if (readError?.code === "ENOENT" && !cached?.valid) {
+      configCache.set(configPath, { signature: fileSignature, value: {}, valid: true, error: null });
+      return {};
+    }
+    const failure = new Error("站点配置无效或无法读取", { cause: error });
+    failure.statusCode = 503;
+    failure.publicMessage = failure.message;
+    console.warn(`配置更新失败${cached?.valid ? "，继续使用上一份有效配置" : ""}：${error.message}`);
+    configCache.set(configPath, { signature: fileSignature, value: cached?.value || {}, valid: cached?.valid || false, error: failure });
+    if (!cached?.valid) throw failure;
+    return cached.value;
+  }
+}
+
+function configFileStatus(configPath) {
+  const cached = configCache.get(configPath);
+  return cached?.error ? { status: "degraded", error: "配置更新失败，正在使用上一份有效配置" } : { status: "ready" };
 }
 
 async function loadConfig() {
@@ -336,7 +383,7 @@ async function loadConfig() {
   const parsed = await readConfigFile(configPath);
   const config = mergeConfig(parsed);
   const docsSetting = pathSetting(cliArgs.docsDir || process.env.DOCS_DIR || config.docsDir, DEFAULT_DOCS_DIR);
-  return { config, configPath, docsDir: resolveFromRoot(docsSetting) };
+  return { config, configPath, docsDir: resolveFromRoot(docsSetting), configStatus: configFileStatus(configPath) };
 }
 
 function safeResolve(root, input) {
@@ -364,6 +411,10 @@ module.exports = {
   MAX_DOCUMENT_COUNT,
   MAX_DIRECTORY_WATCHERS,
   SEARCH_CACHE_SIZE,
+  DEFAULT_INDEX_BYTES,
+  DEFAULT_RENDER_CACHE_BYTES,
+  INDEX_RETRY_DELAY_MS,
+  MAX_RENDER_CACHE_ENTRIES,
   SKILL_INSTALL_PATH,
   SKILL_ARCHIVE_PATH,
   PUBLIC_ROOT_FILES,
@@ -404,6 +455,7 @@ module.exports = {
   pathSetting,
   configFileSignature,
   readConfigFile,
+  configFileStatus,
   loadConfig,
   safeResolve
 };

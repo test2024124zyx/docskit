@@ -6,21 +6,28 @@
   "scripts": {
     "build": "node build.js",
     "build:highlight": "node build-highlight.js",
+    "check": "node content-check.js",
+    "predev": "node build-highlight.js",
     "dev": "node server.js",
+    "prestart": "node build-highlight.js",
     "start": "node server.js",
-    "test": "node --test --experimental-test-coverage"
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80"
   },
   "engines": {
     "node": ">=24"
   },
   "devDependencies": {
-    "jsdom": "26.1.0"
+    "@scalar/json-magic": "^0.15.6",
+    "@scalar/workspace-store": "^0.68.2",
+    "jsdom": "30.1.2"
   },
   "dependencies": {
+    "@apidevtools/swagger-parser": "^13.1.0",
+    "@scalar/api-reference": "^1.73.1",
     "archiver": "^8.0.0",
-    "highlight.js": "^11.11.1",
-    "katex": "^0.18.1",
-    "mermaid": "^11.16.0",
-    "yaml": "^2.9.0"
+    "highlight.js": "^11.12.0",
+    "katex": "^0.19.0",
+    "mermaid": "^12.1.0",
+    "yaml": "^2.9.1"
   }
 }

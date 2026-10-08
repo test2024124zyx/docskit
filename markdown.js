@@ -1,24 +1,15 @@
 "use strict";
 
 const path = require("node:path");
-const YAML = require("yaml");
-const hljs = require("highlight.js/lib/common");
 const katex = require("katex");
 const { classifyAsset, isDownloadableAsset } = require("./media-types");
+const { escapeHtml, normalizeSource, parseValue, splitFrontMatter, stripMarkdown, humanizeName, firstHeading, firstParagraph } = require("./markdown-text");
+const { renderCodeBlock, renderCodeGroup, wrapHighlightedCode, normalizeCodeOptions } = require("./markdown-code");
 
 const DEFAULT_SECTION_PREFIX = "section";
 const DEFAULT_CODE_LANGUAGE = "code";
 const MAX_INLINE_RECURSION = 32;
 const MAX_BLOCK_RECURSION = 64;
-// 代码块行数超过此阈值时，跳过高亮处理，交由客户端延迟高亮，避免服务端性能瓶颈。
-const LAZY_HIGHLIGHT_LINE_THRESHOLD = 100;
-const MATH_LANGUAGES = new Set(["math", "latex", "tex"]);
-const DEFAULT_CODE_OPTIONS = {
-  highlight: true,
-  lineNumbers: true,
-  copy: true,
-  wrap: false
-};
 const FOOTNOTE_LABELS = {
   note: "提示",
   tip: "建议",
@@ -32,96 +23,6 @@ const SAFE_IMAGE_SCHEMES = /^(?:https?:|data:image\/(?:gif|jpeg|jpg|png|svg\+xml
 const INLINE_AUTOLINK_PATTERN = /^(https?:\/\/[^\s<]+|www\.[^\s<]+)/i;
 const EMAIL_AUTOLINK_PATTERN = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
 const AUTOLINK_TRAILING_PUNCTUATION = /[.,!?;:，。！？；：、…\]}}>"'’”»】》」』）]+$/;
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  }[character]));
-}
-
-function normalizeSource(source) {
-  return String(source ?? "").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
-}
-
-function parseValue(value) {
-  const trimmed = String(value ?? "").trim();
-  try {
-    const parsed = YAML.parse(trimmed, { schema: "core" });
-    if (parsed === null || ["string", "number", "boolean"].includes(typeof parsed) || Array.isArray(parsed)) return parsed;
-  } catch (error) {
-    // 单个字段解析失败时保留原文，避免一处错误让整篇文档无法显示。
-  }
-  return trimmed;
-}
-
-function splitFrontMatter(source) {
-  const normalized = normalizeSource(source);
-  const lines = normalized.split("\n");
-  if (lines[0].trim() !== "---") return { attributes: {}, body: source };
-  const end = lines.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line));
-  if (end < 0) return { attributes: {}, body: source };
-  const frontMatter = lines.slice(1, end).join("\n");
-  let attributes = {};
-  try {
-    const parsed = YAML.parse(frontMatter, { schema: "core", prettyErrors: false });
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) attributes = parsed;
-  } catch (error) {
-    // 兼容历史文档：标准 YAML 失败时仍解析简单字段，不丢失正文。
-    lines.slice(1, end).forEach((line) => {
-      const match = line.match(/^\s*([\w-]+)\s*:\s*(.*)$/);
-      if (match && !match[1].startsWith("#")) attributes[match[1]] = parseValue(match[2]);
-    });
-  }
-  return { attributes, body: lines.slice(end + 1).join("\n") };
-}
-
-function stripMarkdown(value) {
-  return String(value ?? "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/~~~[\s\S]*?~~~/g, " ")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
-    .replace(/<((?:https?:\/\/|mailto:)[^>]+)>/gi, "$1")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/^[ \t]*[-+*] |^[ \t]*\d+[.)] /gm, "")
-    .replace(/[>*_`~]/g, "")
-    .replace(/\\([\\`*{}\[\]()#+\-.!_>~|])/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function humanizeName(value) {
-  const withoutExtension = String(value || "").replace(/\.(markdown|md)$/i, "");
-  const clean = withoutExtension.replace(/^\d+[-_. ]*/, "").replace(/[-_]+/g, " ").trim();
-  if (!clean) return String(value || "");
-  if (/^(readme|index)$/i.test(clean)) return "首页";
-  return clean.charAt(0).toUpperCase() + clean.slice(1);
-}
-
-function firstHeading(source) {
-  const match = normalizeSource(source).match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/m);
-  return match ? stripMarkdown(match[1]) : "";
-}
-
-function firstParagraph(source) {
-  const lines = normalizeSource(source).split("\n");
-  const paragraph = [];
-  for (const line of lines) {
-    if (!line.trim()) {
-      if (paragraph.length) break;
-      continue;
-    }
-    if (/^\s{0,3}#{1,6}\s+/.test(line) || /^\s*(```|~~~)/.test(line)) continue;
-    paragraph.push(line.trim());
-  }
-  return stripMarkdown(paragraph.join(" ")).slice(0, 130);
-}
 
 function normalizeRelative(value) {
   return String(value || "").replace(/\\/g, "/").replace(/^\/+/, "");
@@ -219,6 +120,7 @@ function parseTableAlignment(line) {
 
 function isBlockStart(lines, index) {
   const line = lines[index];
+  if (/^\s{0,3}:::\s*code-group(?:\s+[\w-]+)?\s*$/.test(line)) return true;
   if (isBlank(line) || isFenceStart(line) || isMathBlockDelimiter(line) || /^\s{0,3}#{1,6}\s+/.test(line) || isThematicBreak(line) || /^\s{0,3}>/.test(line) || getListMarker(line)) return true;
   return index + 1 < lines.length && parseTableAlignment(lines[index + 1]);
 }
@@ -775,6 +677,26 @@ function parseBlocks(lines, start, end, context, skipped, depth = 0) {
       index += 1;
       continue;
     }
+    const group = lines[index].match(/^\s{0,3}:::\s*code-group(?:\s+([\w-]+))?\s*$/);
+    if (group) {
+      let cursor = index + 1;
+      let fence = null;
+      for (; cursor < end; cursor += 1) {
+        if (fence) {
+          if (isFenceClose(lines[cursor], fence[1][0], fence[1].length)) fence = null;
+        } else {
+          fence = isFenceStart(lines[cursor]);
+          if (!fence && /^\s{0,3}:::\s*$/.test(lines[cursor])) break;
+        }
+      }
+      if (cursor < end) {
+        const children = parseBlocks(lines, index + 1, cursor, context, skipped, depth + 1);
+        if (children.length && children.every((child) => child.type === "code")) nodes.push({ type: "codeGroup", key: group[1] || "language", children });
+        else nodes.push(...children);
+        index = cursor + 1;
+        continue;
+      }
+    }
     if (isMathBlockDelimiter(lines[index])) {
       const formula = [];
       index += 1;
@@ -791,14 +713,16 @@ function parseBlocks(lines, start, end, context, skipped, depth = 0) {
       const character = fence[1][0];
       const length = fence[1].length;
       const code = [];
-      const language = (fence[2] || "").trim().split(/[ \t]+/)[0] || DEFAULT_CODE_LANGUAGE;
+      const information = (fence[2] || "").trim();
+      const language = information.split(/[ \t]+/)[0] || DEFAULT_CODE_LANGUAGE;
+      const label = information.match(/\[([^\]]+)\]/)?.[1] || "";
       index += 1;
       while (index < end && !isFenceClose(lines[index], character, length)) {
         code.push(lines[index]);
         index += 1;
       }
       if (index < end) index += 1;
-      nodes.push({ type: "code", language, code: code.join("\n") });
+      nodes.push({ type: "code", language, label, code: code.join("\n") });
       continue;
     }
     const indentedCode = leadingIndent(lines[index]) >= 4;
@@ -874,29 +798,6 @@ function renderInline(source, currentPath) {
   return renderInlineTokens(String(source ?? ""), createContext(currentPath));
 }
 
-function highlightedCode(code, language) {
-  const normalizedLanguage = String(language || "").toLowerCase();
-  if (!["code", "plain", "text", "txt"].includes(normalizedLanguage) && hljs.getLanguage(normalizedLanguage)) {
-    try {
-      return hljs.highlight(code, { language: normalizedLanguage, ignoreIllegals: true }).value;
-    } catch (error) {
-      // 语言插件遇到异常输入时回退到纯文本，不能让文档渲染失败。
-    }
-  }
-  return escapeHtml(code);
-}
-
-function normalizeCodeOptions(value) {
-  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  return {
-    ...DEFAULT_CODE_OPTIONS,
-    highlight: typeof input.highlight === "boolean" ? input.highlight : DEFAULT_CODE_OPTIONS.highlight,
-    lineNumbers: typeof input.lineNumbers === "boolean" ? input.lineNumbers : DEFAULT_CODE_OPTIONS.lineNumbers,
-    copy: typeof input.copy === "boolean" ? input.copy : DEFAULT_CODE_OPTIONS.copy,
-    wrap: typeof input.wrap === "boolean" ? input.wrap : DEFAULT_CODE_OPTIONS.wrap
-  };
-}
-
 function normalizeRenderOptions(value) {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const links = input.links && typeof input.links === "object" && !Array.isArray(input.links) ? input.links : {};
@@ -909,69 +810,6 @@ function normalizeRenderOptions(value) {
   };
 }
 
-function renderCodeHeader(node, codeOptions) {
-  const copyButton = codeOptions.copy
-    ? `<button class="copy-button" type="button" data-copy="${escapeHtml(node.code)}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="1.5" /><path d="M5 16V5a1 1 0 0 1 1-1h11" /></svg><span>复制</span></button>`
-    : "";
-  return `<div class="code-header"><span>${escapeHtml(node.language)}</span>${copyButton}</div>`;
-}
-
-function renderLineNumberGutter(code) {
-  // 行号已通过 CSS counter 在代码行内 ::before 伪元素生成，gutter 不再输出。
-  return "";
-}
-
-// 按行包装时关闭并重新打开跨行高亮标签，保持每行都是独立且平衡的 DOM。
-function wrapHighlightedCode(html) {
-  const source = String(html);
-  const openTags = [];
-  const lines = [];
-  const tokens = /<\/?span\b[^>]*>|\n/g;
-  let line = "";
-  let offset = 0;
-  const appendLine = () => {
-    const empty = line.replace(/<\/?span\b[^>]*>/g, "") === "";
-    lines.push(`<span class="markdown-code__line"${empty ? ' data-code-empty=""' : ""}>${line}${empty ? " " : ""}${"</span>".repeat(openTags.length)}</span>`);
-    line = openTags.join("");
-  };
-  for (const token of source.matchAll(tokens)) {
-    line += source.slice(offset, token.index);
-    if (token[0] === "\n") {
-      appendLine();
-    } else {
-      line += token[0];
-      if (token[0].startsWith("</")) openTags.pop();
-      else openTags.push(token[0]);
-    }
-    offset = token.index + token[0].length;
-  }
-  line += source.slice(offset);
-  appendLine();
-  return lines.join("");
-}
-
-function renderCodeBlock(node, options = {}) {
-  const codeOptions = normalizeCodeOptions(options);
-  const language = String(node.language || DEFAULT_CODE_LANGUAGE).toLowerCase();
-  const header = renderCodeHeader(node, codeOptions);
-  if (MATH_LANGUAGES.has(language)) return `<div class="code-block markdown-code" data-language="${escapeHtml(language)}">${header}${renderMathBlock(node.code)}</div>`;
-  if (language === "mermaid") {
-    return `<div class="code-block markdown-code markdown-diagram" data-language="mermaid">${header}<div class="markdown-mermaid__source" data-mermaid-source>${escapeHtml(node.code)}</div><pre class="markdown-mermaid__fallback"><code>${escapeHtml(node.code)}</code></pre></div>`;
-  }
-  // 判断是否启用懒高亮：代码行数超过阈值时跳过高亮，交由客户端延迟处理。
-  const lineCount = String(node.code ?? "").split("\n").length;
-  const useLazyHighlight = codeOptions.highlight && lineCount > LAZY_HIGHLIGHT_LINE_THRESHOLD;
-  const isHighlighted = codeOptions.highlight && !useLazyHighlight;
-  const preClasses = ["markdown-code__pre", codeOptions.lineNumbers ? "markdown-code__pre--line-numbers" : "", codeOptions.wrap ? "markdown-code__pre--wrap" : ""].filter(Boolean).join(" ");
-  const codeClasses = ["markdown-code__content", isHighlighted ? "hljs" : ""].filter(Boolean).join(" ");
-  const codeContent = isHighlighted ? highlightedCode(node.code, language) : escapeHtml(node.code);
-  // 为每行代码包裹 span，配合 CSS counter 实现行号显示；块级行自行换行，避免 pre 保留额外空白行。
-  const wrappedCode = wrapHighlightedCode(codeContent);
-  const gutter = codeOptions.lineNumbers ? renderLineNumberGutter(node.code) : "";
-  const lazyAttr = useLazyHighlight ? ` data-lazy-highlight="${escapeHtml(language)}"` : "";
-  return `<div class="code-block markdown-code" data-language="${escapeHtml(language)}"${lazyAttr}>${header}<pre class="${preClasses}">${gutter}<code class="${codeClasses}">${wrappedCode}</code></pre></div>`;
-}
-
 function renderListItem(item, context, state, renderOptions) {
   if (item.task === null) return renderBlocks(item.children, context, { inList: true }, state, renderOptions);
   const first = item.children[0];
@@ -981,7 +819,7 @@ function renderListItem(item, context, state, renderOptions) {
 }
 
 function createRenderState() {
-  return { headings: [], headingIds: new Set() };
+  return { headings: [], headingIds: new Set(), codeGroupCount: 0 };
 }
 
 function renderBlocks(nodes, context, options = {}, state = createRenderState(), renderOptions = normalizeRenderOptions()) {
@@ -1004,7 +842,8 @@ function renderBlocks(nodes, context, options = {}, state = createRenderState(),
       if (!options.inList && node.lines.length === 1 && /^<figure class="markdown-media /.test(content)) return content;
       return `<p>${content}</p>`;
     }
-    if (node.type === "code") return renderCodeBlock(node, renderOptions.code);
+    if (node.type === "code") return renderCodeBlock(node, renderOptions.code, renderMathBlock);
+    if (node.type === "codeGroup") return renderCodeGroup(node, ++state.codeGroupCount, renderOptions.code, renderMathBlock);
     if (node.type === "math") return renderMathBlock(node.code);
     if (node.type === "thematicBreak") return "<hr />";
     if (node.type === "blockquote") {
@@ -1069,5 +908,6 @@ module.exports = {
   wrapHighlightedCode,
   renderInline,
   parseMarkdown,
+  slugify,
   renderMarkdown
 };

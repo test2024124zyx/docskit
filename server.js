@@ -8,10 +8,15 @@ const { startServer: startServerRuntime } = require("./server-lifecycle");
 const { createHttpError, assertNoSymlink, resolveExistingFile } = require("./server-filesystem");
 const assets = require("./server-assets");
 const { createSkillArchive } = require("./skill-archive");
-const { ensureBundle: ensureHighlightBundle } = require("./build-highlight");
-
-// 确保 highlight.js 客户端 bundle 存在，供大代码块延迟高亮使用。
-ensureHighlightBundle();
+const { ByteBudgetCache } = require("./server-cache");
+const { imageSource, seoValues, renderRobots, renderSitemap, trustedSiteOrigin, documentPageUrl } = require("./server-seo");
+const {
+  compareNames, creationTime, assertDirectoryDepth, assertDocumentCount, scanDocuments,
+  scanFilesystemSignature, createDocumentIndexState, createDocumentIndexStore, preferredDocument
+} = require("./server-index");
+const { searchDocuments } = require("./search-core");
+const { renderLlms, exportMarkdown } = require("./server-exports");
+const { apiConnectSources } = require("./server-api-policy");
 
 const {
   escapeHtml,
@@ -40,6 +45,8 @@ const {
   MAX_DOCUMENT_COUNT,
   MAX_DIRECTORY_WATCHERS,
   SEARCH_CACHE_SIZE,
+  DEFAULT_RENDER_CACHE_BYTES,
+  MAX_RENDER_CACHE_ENTRIES,
   SKILL_ARCHIVE_PATH,
   STATIC_RESOURCE_PATHS,
   SORT_MODE_CREATED_AT,
@@ -75,13 +82,15 @@ const {
   safeResolve
 } = serverConfig;
 
-const documentIndexCache = new Map();
 // 文档渲染结果缓存，避免每次请求都重新解析和渲染 Markdown。缓存以文档路径和更新时间为 key，文件变更时自动失效。
-const renderCache = new Map();
+const renderCache = new ByteBudgetCache(DEFAULT_RENDER_CACHE_BYTES, MAX_RENDER_CACHE_ENTRIES);
 // Bootstrap 响应缓存完整 JSON 和 ETag，避免并发请求重复构树、序列化和计算摘要。
 const bootstrapCache = new Map();
 // 搜索结果按文档数组弱引用缓存，索引更新后旧数组可被垃圾回收。
 const searchCache = new WeakMap();
+const { getDocumentIndex, markDocumentIndexDirty, syncDirectoryWatchers, closeDocumentIndexWatchers } = createDocumentIndexStore({
+  onInvalidate() { renderCache.clear(); bootstrapCache.clear(); }
+});
 
 function toPosix(value) {
   return value.split(path.sep).join("/");
@@ -141,10 +150,6 @@ function deriveThemeColors(themeColor) {
   return { accent, accentDark, accentSoft, accentPale };
 }
 
-function compareNames(left, right) {
-  return left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" });
-}
-
 function stableHash(value) {
   let hash = 2166136261;
   for (const character of String(value)) {
@@ -156,26 +161,6 @@ function stableHash(value) {
 
 function selectStableIcon(icons, relativePath, type, variant) {
   return icons[stableHash(`${variant}:${type}:${relativePath}`) % icons.length];
-}
-
-// 创建时间优先使用 birthtime，当前文件系统不提供时回退到 ctime 和 mtime。
-function creationTime(stat) {
-  const candidates = [stat.birthtimeMs, stat.ctimeMs, stat.mtimeMs].map(Number);
-  const timestamp = candidates.find((value) => Number.isFinite(value) && value > 0) || 0;
-  return {
-    createdAtMs: timestamp || Number.MAX_SAFE_INTEGER,
-    createdAt: timestamp ? new Date(timestamp).toISOString() : ""
-  };
-}
-
-function assertDirectoryDepth(depth, relativePath) {
-  if (depth <= MAX_DIRECTORY_DEPTH) return;
-  throw createHttpError(422, `文档目录超过 ${MAX_DIRECTORY_DEPTH} 级：${relativePath || "根目录"}`);
-}
-
-function assertDocumentCount(count, relativePath) {
-  if (count <= MAX_DOCUMENT_COUNT) return;
-  throw createHttpError(422, `Markdown 文档数量超过上限 ${MAX_DOCUMENT_COUNT} 篇，超限文件：${relativePath}`);
 }
 
 function findConfiguredIcon(settings, relativePath, type, frontMatterIcon) {
@@ -256,249 +241,6 @@ function resolveIcon(sidebar, relativePath, type, frontMatterIcon, depth) {
   };
 }
 
-async function scanDocuments(docsDir) {
-  const documents = [];
-  const directories = new Set();
-  const directoryMetadata = new Map();
-  const signatureParts = [];
-  let documentCount = 0;
-  async function walk(directory, prefix, depth) {
-    assertDirectoryDepth(depth, prefix);
-    let entries;
-    let directoryStat;
-    try {
-      [entries, directoryStat] = await Promise.all([
-        fsp.readdir(directory, { withFileTypes: true }),
-        fsp.lstat(directory)
-      ]);
-    } catch (error) {
-      if (error.code === "ENOENT") return;
-      throw error;
-    }
-    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return;
-    directories.add(directory);
-    directoryMetadata.set(prefix, creationTime(directoryStat));
-    signatureParts.push(`d:${prefix}:${directoryStat.size}:${directoryStat.mtimeMs}:${directoryStat.ctimeMs}`);
-    entries.sort((left, right) => {
-      if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
-      return compareNames(left.name, right.name);
-    });
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.isSymbolicLink()) continue;
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const absolutePath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await walk(absolutePath, relativePath, depth + 1);
-        continue;
-      }
-      if (!/\.(md|markdown)$/i.test(entry.name)) continue;
-      let raw;
-      let fileStat;
-      try {
-        fileStat = await fsp.lstat(absolutePath);
-      } catch (error) {
-        if (error.code === "ENOENT") continue;
-        throw error;
-      }
-      if (!fileStat.isFile() || fileStat.isSymbolicLink()) continue;
-      signatureParts.push(`f:${relativePath}:${fileStat.size}:${fileStat.mtimeMs}:${fileStat.ctimeMs}`);
-      documentCount += 1;
-      assertDocumentCount(documentCount, relativePath);
-      if (fileStat.size > MAX_MARKDOWN_BYTES) continue;
-      try {
-        raw = await fsp.readFile(absolutePath, "utf8");
-      } catch (error) {
-        if (error.code === "ENOENT") continue;
-        throw error;
-      }
-      const front = splitFrontMatter(raw);
-      const baseName = entry.name.replace(/\.(markdown|md)$/i, "");
-      const parent = prefix ? prefix.split("/").pop() : "";
-      const inferredTitle = /^(readme|index)$/i.test(baseName) && parent ? humanizeName(parent) : humanizeName(entry.name);
-      const title = String(front.attributes.title || firstHeading(front.body) || inferredTitle);
-      documents.push({
-        type: "file",
-        path: relativePath,
-        title,
-        description: String(front.attributes.description || firstParagraph(front.body) || ""),
-        order: typeof front.attributes.order === "number" ? front.attributes.order : Number.MAX_SAFE_INTEGER,
-        icon: front.attributes.icon || "",
-        hidden: front.attributes.hidden === true,
-        raw,
-        body: front.body,
-        plainBody: stripMarkdown(front.body),
-        updatedAt: fileStat.mtime.toISOString(),
-        ...creationTime(fileStat)
-      });
-    }
-  }
-  await walk(docsDir, "", 0);
-  const visibleDocuments = documents.filter((document) => !document.hidden);
-  visibleDocuments.forEach((document) => {
-    document.searchText = `${document.title}\n${document.path}\n${document.plainBody}`.toLocaleLowerCase();
-  });
-  return { documents: visibleDocuments, directories, directoryMetadata, filesystemSignature: signatureParts.sort().join("|") };
-}
-
-async function scanFilesystemSignature(docsDir) {
-  const signatureParts = [];
-  let documentCount = 0;
-  async function walk(directory, prefix, depth) {
-    assertDirectoryDepth(depth, prefix);
-    let entries;
-    let directoryStat;
-    try {
-      [entries, directoryStat] = await Promise.all([
-        fsp.readdir(directory, { withFileTypes: true }),
-        fsp.lstat(directory)
-      ]);
-    } catch (error) {
-      if (error.code === "ENOENT") return;
-      throw error;
-    }
-    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return;
-    signatureParts.push(`d:${prefix}:${directoryStat.size}:${directoryStat.mtimeMs}:${directoryStat.ctimeMs}`);
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.isSymbolicLink()) continue;
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const absolutePath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await walk(absolutePath, relativePath, depth + 1);
-        continue;
-      }
-      if (!/\.(md|markdown)$/i.test(entry.name)) continue;
-      let fileStat;
-      try {
-        fileStat = await fsp.lstat(absolutePath);
-      } catch (error) {
-        if (error.code === "ENOENT") continue;
-        throw error;
-      }
-      if (!fileStat.isFile() || fileStat.isSymbolicLink()) continue;
-      signatureParts.push(`f:${relativePath}:${fileStat.size}:${fileStat.mtimeMs}:${fileStat.ctimeMs}`);
-      documentCount += 1;
-      assertDocumentCount(documentCount, relativePath);
-    }
-  }
-  await walk(docsDir, "", 0);
-  return signatureParts.sort().join("|");
-}
-
-function createDocumentIndexState(docsDir) {
-  return {
-    docsDir,
-    documents: [],
-    directoryMetadata: new Map(),
-    dirty: true,
-    revision: 0,
-    promise: null,
-    watchers: new Map(),
-    watchUnavailable: false,
-    watchWarningShown: false,
-    filesystemSignature: "",
-    lastSignatureCheckAt: 0
-  };
-}
-
-function markDocumentIndexDirty(state) {
-  state.dirty = true;
-  state.revision += 1;
-  // 文件系统变更时清除渲染缓存，确保文档更新后能获取最新内容。
-  renderCache.clear();
-  bootstrapCache.clear();
-}
-
-function addDirectoryWatcher(state, directory) {
-  if (state.watchers.has(directory)) return true;
-  try {
-    const watcher = fs.watch(directory, { persistent: false }, () => markDocumentIndexDirty(state));
-    watcher.on("error", (error) => {
-      if (state.watchers.get(directory) === watcher) state.watchers.delete(directory);
-      state.watchUnavailable = true;
-      markDocumentIndexDirty(state);
-      if (!state.watchWarningShown) {
-        console.warn(`无法监听文档目录 ${directory}，将按请求重新检查：${error.message}`);
-        state.watchWarningShown = true;
-      }
-    });
-    state.watchers.set(directory, watcher);
-    return true;
-  } catch (error) {
-    state.watchUnavailable = true;
-    markDocumentIndexDirty(state);
-    if (!state.watchWarningShown) {
-      console.warn(`无法监听文档目录 ${directory}，将按请求重新检查：${error.message}`);
-      state.watchWarningShown = true;
-    }
-    return false;
-  }
-}
-
-function syncDirectoryWatchers(state, directories) {
-  const activeDirectories = new Set(Array.from(directories, (directory) => path.resolve(directory)));
-  const rootDirectory = path.resolve(state.docsDir);
-  const watchDirectories = activeDirectories.size > MAX_DIRECTORY_WATCHERS
-    ? new Set([rootDirectory])
-    : activeDirectories;
-  let watcherUnavailable = false;
-  for (const directory of watchDirectories) {
-    addDirectoryWatcher(state, directory);
-    if (!state.watchers.has(directory)) watcherUnavailable = true;
-  }
-  for (const [directory, watcher] of state.watchers) {
-    if (watchDirectories.has(directory)) continue;
-    watcher.close();
-    state.watchers.delete(directory);
-  }
-  state.watchUnavailable = watcherUnavailable || activeDirectories.size > MAX_DIRECTORY_WATCHERS;
-  if (activeDirectories.size > MAX_DIRECTORY_WATCHERS && !state.watchWarningShown) {
-    console.warn(`文档目录数量超过 ${MAX_DIRECTORY_WATCHERS} 个，将使用定时轮询检查变化`);
-    state.watchWarningShown = true;
-  }
-  return activeDirectories.size > 0;
-}
-
-function documentIndexResult(state) {
-  return { documents: state.documents, directoryMetadata: state.directoryMetadata };
-}
-
-async function getDocumentIndex(docsDir) {
-  const cacheKey = path.resolve(docsDir);
-  let state = documentIndexCache.get(cacheKey);
-  if (!state) {
-    state = createDocumentIndexState(cacheKey);
-    documentIndexCache.set(cacheKey, state);
-  }
-  // watcher 负责即时更新，定时签名检查兜底处理未上报的文件系统事件。
-  if (!state.dirty && Date.now() - state.lastSignatureCheckAt >= INDEX_POLL_INTERVAL_MS) {
-    state.lastSignatureCheckAt = Date.now();
-    const filesystemSignature = await scanFilesystemSignature(state.docsDir);
-    if (filesystemSignature !== state.filesystemSignature) markDocumentIndexDirty(state);
-  }
-  if (!state.dirty) return documentIndexResult(state);
-  if (state.promise) return state.promise;
-
-  const scanRevision = state.revision;
-  state.promise = (async () => {
-    try {
-      const result = await scanDocuments(state.docsDir);
-      state.documents = result.documents;
-      state.directoryMetadata = result.directoryMetadata;
-      state.filesystemSignature = result.filesystemSignature;
-      state.lastSignatureCheckAt = Date.now();
-      const hasDirectoryToWatch = syncDirectoryWatchers(state, result.directories);
-      state.dirty = !hasDirectoryToWatch || state.revision !== scanRevision;
-      return documentIndexResult(state);
-    } catch (error) {
-      state.dirty = true;
-      throw error;
-    } finally {
-      state.promise = null;
-    }
-  })();
-  return state.promise;
-}
-
 function sortNodes(nodes, sortMode) {
   return nodes.sort((left, right) => {
     if (left.order !== right.order) return left.order - right.order;
@@ -573,8 +315,9 @@ function documentIcon(config, document) {
 
 function publicDocument(document, config, options = {}) {
   const icon = documentIcon(config, document);
+  renderCache.setBudget(config.limits?.renderCacheBytes || DEFAULT_RENDER_CACHE_BYTES);
   // 使用文档、渲染配置和链接模式作为缓存 key，避免配置变化或静态链接复用旧 HTML。
-  const cacheKey = `${document.path}|${document.updatedAt}|${icon.name}:${icon.color}|${JSON.stringify(config.markdown)}|${options.links ? "static" : "dynamic"}`;
+  const cacheKey = `${document.cacheKey || `${document.path}|${document.updatedAt}`}|${JSON.stringify(icon)}|${JSON.stringify(config.markdown)}`;
   // 静态链接回调捕获本次构建的 base/路由表，不复用跨构建的全局缓存。
   const cached = options.links ? null : renderCache.get(cacheKey);
   if (cached) return cached;
@@ -584,6 +327,9 @@ function publicDocument(document, config, options = {}) {
     path: document.path,
     title: document.title,
     description: document.description,
+    markdown: exportMarkdown(document),
+    markdownUrl: `/api/markdown?path=${encodeURIComponent(document.path)}`,
+    ...(document.apiReference ? { apiReference: document.apiReference } : {}),
     html: rendered.html,
     headings: rendered.headings,
     updatedAt: document.updatedAt,
@@ -593,11 +339,6 @@ function publicDocument(document, config, options = {}) {
     iconColors: icon.colors
   };
   if (!options.links) renderCache.set(cacheKey, result);
-  // 限制缓存大小，防止内存无限增长。
-  if (renderCache.size > 200) {
-    const firstKey = renderCache.keys().next().value;
-    renderCache.delete(firstKey);
-  }
   return result;
 }
 
@@ -611,32 +352,12 @@ function makeSearchSnippet(plain, query) {
   return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
 }
 
-function countSearchTerm(value, term) {
-  let count = 0;
-  let offset = 0;
-  while (term && offset < value.length) {
-    const matchIndex = value.indexOf(term, offset);
-    if (matchIndex < 0) break;
-    count += 1;
-    offset = matchIndex + term.length;
-  }
-  return count;
-}
-
 function makeSearchResults(documents, query, config) {
-  const normalized = query.trim().toLocaleLowerCase();
-  if (!normalized) return [];
-  const terms = normalized.split(/\s+/).filter(Boolean);
-  return documents.map((document) => {
-    const haystack = document.searchText || `${document.title}\n${document.path}\n${document.plainBody || ""}`.toLocaleLowerCase();
-    if (!terms.every((term) => haystack.includes(term))) return null;
-    let score = 0;
-    if (document.title.toLocaleLowerCase().includes(normalized)) score += 80;
-    if (document.path.toLocaleLowerCase().includes(normalized)) score += 45;
-    terms.forEach((term) => { score += countSearchTerm(haystack, term); });
-    const icon = documentIcon(config, document);
-    return { path: document.path, title: document.title, description: document.description, snippet: makeSearchSnippet(document.plainBody, normalized), score, icon: icon.name, iconColor: icon.color, iconColors: icon.colors };
-  }).filter(Boolean).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, SEARCH_RESULT_LIMIT);
+  const byPath = new Map(documents.map((document) => [document.path, document]));
+  return searchDocuments(documents, query, { limit: SEARCH_RESULT_LIMIT }).map((result) => {
+    const icon = documentIcon(config, byPath.get(result.path));
+    return { ...result, icon: icon.name, iconColor: icon.color, iconColors: icon.colors };
+  });
 }
 
 function cachedSearchResults(documents, query, config) {
@@ -655,38 +376,6 @@ function cachedSearchResults(documents, query, config) {
   return results;
 }
 
-function imageSource(value, options = {}) {
-  const configured = isObject(value) ? value.src || value.url : value;
-  const source = typeof configured === "string" ? configured.trim() : "";
-  if (!source) return "";
-  if (/^(?:https?:|data:|blob:|\/\/|\/)/i.test(source)) return source;
-  if (typeof options.assetUrl === "function") return options.assetUrl(source);
-  return `/api/asset?path=${encodeURIComponent(source)}`;
-}
-
-function seoValues(config, documentData, pageUrl, options = {}) {
-  const site = config.site || {};
-  const seo = isObject(site.seo) ? site.seo : {};
-  const brand = isObject(site.brand) ? site.brand : { name: site.brand || "docs", accent: "" };
-  const siteTitle = String(seo.title || site.title || `${brand.name || "docs"}${brand.accent || ""}` || "文档站点");
-  const title = documentData ? `${documentData.title} - ${siteTitle}` : siteTitle;
-  const description = String(documentData?.description || seo.description || site.description || "Markdown 文档站点");
-  const keywords = Array.isArray(seo.keywords) ? seo.keywords.filter((item) => typeof item === "string").join(", ") : String(seo.keywords || "");
-  const image = imageSource(seo.image || seo.ogImage || site.logo, options);
-  return {
-    title,
-    description,
-    keywords,
-    author: String(seo.author || ""),
-    robots: String(seo.robots || "index,follow"),
-    themeColor: normalizeColorValue(seo.themeColor),
-    canonical: String(seo.canonical || pageUrl),
-    image,
-    type: documentData ? "article" : "website",
-    url: pageUrl
-  };
-}
-
 function publicConfig(config) {
   const site = config.site || {};
   const sidebar = config.sidebar || {};
@@ -697,7 +386,9 @@ function publicConfig(config) {
     return { src: typeof value.src === "string" ? value.src : "", url: typeof value.url === "string" ? value.url : "", alt: typeof value.alt === "string" ? value.alt : "" };
   };
   return {
+    home: config.home || "",
     site: {
+      url: site.url || "",
       brand: isObject(site.brand) ? { name: site.brand.name, accent: site.brand.accent } : site.brand,
       context: String(site.context || "文档"),
       eyebrow: String(site.eyebrow || "DOCUMENTATION"),
@@ -755,10 +446,6 @@ function publicConfig(config) {
   };
 }
 
-function escapeXml(value) {
-  return escapeHtml(value).replace(/&#39;/g, "&apos;");
-}
-
 function serializeInlineJson(value) {
   return JSON.stringify(value)
     .replace(/</g, "\\u003c")
@@ -789,6 +476,7 @@ function replaceHeadMeta(template, attribute, name, value) {
 
 function renderPage(template, config, documentData, pageUrl, options = {}) {
   const seo = seoValues(config, documentData, pageUrl, options);
+  if (options.notFound) seo.robots = "noindex,follow";
   let html = template.replace(/<title>[^<]*<\/title>/i, () => `<title>${escapeHtml(seo.title)}</title>`);
   [
     ["name", "description", seo.description],
@@ -819,8 +507,11 @@ function renderPage(template, config, documentData, pageUrl, options = {}) {
   const faviconType = String(config.site?.favicon || config.site?.ico || "").toLowerCase().endsWith(".ico") ? "image/x-icon" : "image/png";
   const favicon = `<link rel="icon" id="site-favicon"${faviconSource ? ` href="${escapeHtml(faviconSource)}" type="${faviconType}"` : ""} />`;
   html = html.replace(/<link\s+rel="icon"\s+id="site-favicon"[^>]*>/i, () => favicon);
-  const content = documentData ? renderDocumentSection(documentData) : `<section class="doc-section empty-document"><h1>还没有 Markdown 文档</h1><p>把 Markdown 文件放入文档目录，然后刷新页面。</p></section>`;
-  html = html.replace(/<article\s+class="doc-article"\s+id="doc-content"\s+aria-live="polite">[\s\S]*?<\/article>/i, () => `<article class="doc-article" id="doc-content" aria-live="polite">${content}</article>`);
+  const emptyContent = options.notFound
+    ? `<section class="doc-section empty-document"><h1>文档不存在</h1><p>该文档可能已移动或删除，请从导航中选择其他文档。</p><a href="/">返回首页</a></section>`
+    : `<section class="doc-section empty-document"><h1>还没有 Markdown 文档</h1><p>把 Markdown 文件放入文档目录，然后刷新页面。</p></section>`;
+  const content = documentData ? renderDocumentSection(documentData) : emptyContent;
+  html = html.replace(/(<article\b[^>]*\bid="doc-content"[^>]*>)[\s\S]*?<\/article>/i, (match, opening) => `${opening}${content}</article>`);
   if (Object.prototype.hasOwnProperty.call(options, "staticData")) {
     const staticData = `<script id="docskit-static-data" type="application/json">${serializeInlineJson(options.staticData)}</script>`;
     // 静态数据必须先于运行时脚本出现，浏览器解析脚本时才能直接进入离线模式。
@@ -856,19 +547,23 @@ function sendJsonBody(response, status, body, options = {}) {
   sendBody(response, status, body, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": options.cacheControl || "no-cache, must-revalidate" }, options);
 }
 
-function getBootstrapResponse(docsDir, index, config) {
+function getBootstrapResponse(docsDir, index, config, configStatus = { status: "ready" }) {
   const documents = index.documents || [];
   const directoryMetadata = index.directoryMetadata || new Map();
   const configData = publicConfig(config);
-  const configSignature = JSON.stringify(configData);
+  const health = { index: index.health || { status: "ready" }, configuration: configStatus };
+  const configSignature = JSON.stringify({ configData, health });
   const cacheKey = path.resolve(docsDir);
   const cached = bootstrapCache.get(cacheKey);
   if (cached && cached.documents === documents && cached.directoryMetadata === directoryMetadata && cached.configSignature === configSignature) return cached;
 
   const tree = createTree(documents, config, directoryMetadata);
-  const preferred = preferredDocument(documents);
+  const preferred = preferredDocument(documents, config);
   const payload = {
     config: configData,
+    health,
+    llmsUrl: "/llms.txt",
+    llmsFullUrl: "/llms-full.txt",
     tree,
     defaultPath: preferred ? preferred.path : "",
     documents: documents.map((document) => {
@@ -889,83 +584,60 @@ function getBootstrapResponse(docsDir, index, config) {
   return result;
 }
 
-function preferredDocument(documents) {
-  return documents.find((document) => /(^|\/)index\.(md|markdown)$/i.test(document.path)) || documents.find((document) => /(^|\/)readme\.(md|markdown)$/i.test(document.path)) || documents[0];
-}
-
-function pageUrlFor(requestUrl, documentPath) {
-  const pageUrl = new URL("/", requestUrl.origin);
-  if (documentPath) pageUrl.searchParams.set("doc", documentPath);
-  return pageUrl.href;
-}
-
-function renderRobots(config, origin, options = {}) {
-  const robots = String(config.site?.seo?.robots || "index,follow");
-  const disallow = /noindex/i.test(robots) ? "Disallow: /\n" : "Disallow:\n";
-  const sitemapUrl = String(options.sitemapUrl || (origin ? `${String(origin).replace(/\/+$/, "")}/sitemap.xml` : ""));
-  return `User-agent: *\n${disallow}${sitemapUrl ? `Sitemap: ${sitemapUrl}\n` : ""}`;
-}
-
-function renderSitemap(documents, origin, options = {}) {
-  const homeUrl = options.homeUrl || (origin ? new URL("/", origin).href : "/");
-  const documentUrl = typeof options.documentUrl === "function"
-    ? options.documentUrl
-    : (document) => {
-      const url = new URL("/", origin);
-      url.searchParams.set("doc", document.path);
-      return url.href;
-    };
-  const entries = documents.map((document) => {
-    const lastModified = new Date(document.updatedAt);
-    const lastmod = Number.isNaN(lastModified.getTime()) ? "" : `<lastmod>${lastModified.toISOString()}</lastmod>`;
-    return `<url><loc>${escapeXml(documentUrl(document))}</loc>${lastmod}</url>`;
-  }).join("");
-  return `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${escapeXml(homeUrl)}</loc></url>${entries}</urlset>`;
-}
-
 async function handleRequest(request, response, options = {}) {
   const loadCurrentConfig = typeof options.loadConfig === "function" ? options.loadConfig : loadConfig;
-  const loadIndex = typeof options.getDocumentIndex === "function" ? options.getDocumentIndex : getDocumentIndex;
+  const indexLoader = typeof options.getDocumentIndex === "function" ? options.getDocumentIndex : getDocumentIndex;
   const rootDir = options.rootDir || ROOT_DIR;
-  const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+  let requestUrl;
+  try { requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`); }
+  catch { throw createHttpError(400, "无效请求地址"); }
   if (!["GET", "HEAD"].includes(request.method)) return jsonResponse(response, 405, { error: "只支持 GET 和 HEAD 请求" }, { request, cacheControl: "no-store" });
   if (requestUrl.pathname === "/healthz") return jsonResponse(response, 200, { status: "ok", service: "docs-kit" }, { request, cacheControl: "no-store" });
 
   const current = await loadCurrentConfig();
   const { config, docsDir } = current;
+  const loadIndex = () => indexLoader(docsDir, { maxBytes: config.limits?.indexBytes });
+  const siteOrigin = trustedSiteOrigin(config, requestUrl);
 
   if (requestUrl.pathname === "/readyz") {
     try {
       const docsStat = await fsp.lstat(docsDir);
       if (!docsStat.isDirectory()) throw new Error("文档目录不是目录");
-      const { documents } = await loadIndex(docsDir);
-      return jsonResponse(response, 200, { status: "ready", service: "docs-kit", documents: documents.length }, { request, cacheControl: "no-store" });
+      const index = await loadIndex();
+      const degraded = index.health?.status === "degraded" || current.configStatus?.status === "degraded";
+      return jsonResponse(response, degraded ? 503 : 200, {
+        status: degraded ? "degraded" : "ready", service: "docs-kit", documents: index.documents.length,
+        ...(degraded ? { health: { index: index.health, configuration: current.configStatus } } : {})
+      }, { request, cacheControl: "no-store" });
     } catch (error) {
       throw createHttpError(503, "文档服务尚未就绪", error);
     }
   }
 
   if (requestUrl.pathname === "/api/bootstrap") {
-    const index = await loadIndex(docsDir);
-    const cached = getBootstrapResponse(docsDir, index, config);
+    const index = await loadIndex();
+    const cached = getBootstrapResponse(docsDir, index, config, current.configStatus);
     return sendJsonBody(response, 200, cached.body, { request, etag: cached.etag, contentLength: cached.contentLength });
   }
 
-  if (requestUrl.pathname === "/api/document") {
+  if (["/api/document", "/api/markdown"].includes(requestUrl.pathname)) {
     const requestedPath = requestUrl.searchParams.get("path") || "";
     let filePath;
     try { filePath = safeResolve(docsDir, requestedPath); } catch (error) { return jsonResponse(response, 400, { error: "无效文档路径" }, { request, cacheControl: "no-store" }); }
     if (!/\.(md|markdown)$/i.test(filePath)) return jsonResponse(response, 400, { error: "只支持 Markdown 文档" });
-    const { documents } = await loadIndex(docsDir);
+    const { documents } = await loadIndex();
     const document = documents.find((item) => item.path === normalizeRelative(requestedPath));
     if (!document) return jsonResponse(response, 404, { error: "文档不存在" });
+    if (requestUrl.pathname === "/api/markdown") {
+      return sendBody(response, 200, exportMarkdown(document), { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+    }
     return jsonResponse(response, 200, publicDocument(document, config), { request });
   }
 
   if (requestUrl.pathname === "/api/search") {
     const query = requestUrl.searchParams.get("q") || "";
     if (query.length > MAX_SEARCH_QUERY_LENGTH) return jsonResponse(response, 400, { error: "搜索关键词过长" }, { request, cacheControl: "no-store" });
-    const { documents } = await loadIndex(docsDir);
+    const { documents } = await loadIndex();
     return jsonResponse(response, 200, { query, results: cachedSearchResults(documents, query, config) }, { request });
   }
 
@@ -1000,20 +672,27 @@ async function handleRequest(request, response, options = {}) {
   if (requestUrl.pathname.startsWith("/api/")) return jsonResponse(response, 404, { error: "接口不存在" });
 
   if (requestUrl.pathname === "/" || requestUrl.pathname === "/index.html") {
-    const index = await loadIndex(docsDir);
+    const index = await loadIndex();
     const requestedPath = normalizeRelative(requestUrl.searchParams.get("doc") || "");
-    const selected = requestedPath ? index.documents.find((document) => document.path === requestedPath) : preferredDocument(index.documents);
+    const selected = requestedPath ? index.documents.find((document) => document.path === requestedPath) : preferredDocument(index.documents, config);
     const templatePath = await resolveExistingFile(rootDir, "index.html");
     const template = await fsp.readFile(templatePath, "utf8");
     const documentData = selected ? publicDocument(selected, config) : null;
     const status = requestedPath && !selected ? 404 : 200;
-    return sendBody(response, status, renderPage(template, config, documentData, pageUrlFor(requestUrl, requestedPath)), { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+    return sendBody(response, status, renderPage(template, config, documentData, documentPageUrl(config, requestedPath, requestUrl), { notFound: status === 404 }), {
+      "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache, must-revalidate",
+      "Content-Security-Policy": assets.contentSecurityPolicy(index.connectSources || apiConnectSources(index.documents))
+    }, { request });
   }
 
-  if (requestUrl.pathname === "/robots.txt") return sendBody(response, 200, renderRobots(config, requestUrl.origin), { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+  if (["/llms.txt", "/llms-full.txt"].includes(requestUrl.pathname)) {
+    const { documents } = await loadIndex();
+    return sendBody(response, 200, renderLlms(documents, config, { full: requestUrl.pathname === "/llms-full.txt" }), { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+  }
+  if (requestUrl.pathname === "/robots.txt") return sendBody(response, 200, renderRobots(config, siteOrigin), { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
   if (requestUrl.pathname === "/sitemap.xml") {
-    const { documents } = await loadIndex(docsDir);
-    return sendBody(response, 200, renderSitemap(documents, requestUrl.origin), { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
+    const { documents } = await loadIndex();
+    return sendBody(response, 200, renderSitemap(documents, siteOrigin), { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-cache, must-revalidate" }, { request });
   }
 
   if (requestUrl.pathname === `/${SKILL_ARCHIVE_PATH}`) {
@@ -1032,10 +711,12 @@ async function handleRequest(request, response, options = {}) {
     if (error.statusCode) return jsonResponse(response, error.statusCode, { error: error.publicMessage }, { request, cacheControl: "no-store" });
     throw error;
   }
+  // 代码资源没有内容指纹，发布后必须重新验证，仍允许通过 ETag 返回 304。
+  const isCodeResource = [".js", ".css"].includes(path.extname(staticPath).toLowerCase());
   return assets.sendFile(response, staticPath, {
     request,
     maxBytes: MAX_ASSET_BYTES,
-    cacheControl: "public, max-age=3600, must-revalidate"
+    cacheControl: isCodeResource ? "no-cache, must-revalidate" : "public, max-age=3600, must-revalidate"
   });
 }
 
@@ -1054,14 +735,9 @@ function createServer(options = {}) {
   });
 }
 
-function closeDocumentIndexWatchers() {
-  for (const state of documentIndexCache.values()) {
-    for (const watcher of state.watchers.values()) watcher.close();
-    state.watchers.clear();
-  }
-}
-
 function startServer() {
+  // 显式启动时才准备浏览器产物，导入业务模块与单测不产生构建副作用。
+  require("./build-highlight").ensureBundle();
   return startServerRuntime({ createServer, closeDocumentIndexWatchers, port, host, cliArgs, resolveFromRoot });
 }
 
@@ -1114,6 +790,7 @@ module.exports = {
   getDocumentIndex,
   sortNodes,
   createTree,
+  preferredDocument,
   renderInline,
   parseMarkdown,
   renderMarkdown,

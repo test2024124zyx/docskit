@@ -17,7 +17,7 @@ DocsKit 文档使用 `.md` 或 `.markdown` 文件编写。每篇文档建议保�
 
 ## 使用 front matter
 
-front matter 必须从文件第一行开始，用两行单独的 `---` 包围。它只支持以下五个字段：
+front matter 必须从文件第一行开始，用两行单独的 `---` 包围。支持以下字段：
 
 | 字段 | 类型 | 用途 |
 | --- | --- | --- |
@@ -26,6 +26,7 @@ front matter 必须从文件第一行开始，用两行单独的 `---` 包围。
 | `order` | 数字 | 设置同级导航顺序 |
 | `icon` | 字符串 | 设置文档图标 |
 | `hidden` | 布尔值 | 使用 `true` 隐藏文档 |
+| `openapi` | 字符串 | 绑定本地 OpenAPI JSON 或 YAML 文件，见 [OpenAPI 与在线调试](openapi.md) |
 
 ```md
 ---
@@ -59,6 +60,36 @@ graph TD
   A[开始] --> B[完成]
 ```
 ~~~
+
+## 多语言代码组
+
+把同一操作的不同语言实现放在 `::: code-group` 容器内。代码围栏后的方括号设置标签；切换语言后，其他代码组会优先使用相同语言。键盘方向键、Home 和 End 可以选择标签。
+
+~~~~markdown
+::: code-group request
+```bash [cURL]
+curl --get --data-urlencode 'q=安装' http://localhost:3000/api/search
+```
+```javascript [JavaScript]
+const response = await fetch('/api/search?q=安装');
+const result = await response.json();
+```
+:::
+~~~~
+
+代码块内的接口路径、请求头和错误码也能被全文搜索检索，搜索结果会定位到对应章节。
+
+下面是可直接切换的代码组示例：
+
+::: code-group request
+```bash [cURL]
+curl --get --data-urlencode 'q=安装' http://localhost:3000/api/search
+```
+```javascript [JavaScript]
+const response = await fetch('/api/search?q=安装');
+const result = await response.json();
+```
+:::
 
 ## 在正文展示图标
 
@@ -106,13 +137,15 @@ graph TD
 [下载源代码](assets/source.zip)
 ```
 
-支持 PDF、Office 文档、压缩包、CSV、TXT、JSON、XML 等公开附件。Markdown 原文、隐藏文件、配置文件、符号链接和越界路径不会被下载接口暴露。
+支持 PDF、Office 文档、压缩包、CSV、TXT、JSON、XML 等公开附件。附件接口不会暴露 Markdown、隐藏文件、配置文件、符号链接和越界路径。可见文档可以通过页面的复制和下载按钮获取 Markdown 正文；front matter 不包含在导出中。站点还提供 `llms.txt` 文档索引和 `llms-full.txt` 正文集合。
 
 ## 配置站点
 
 需要调整全局品牌、SEO、页脚、顶部导航、排序、图标或展开方式时，编辑文档目录下的 `docs.config.json`，不要把这些字段写进单篇文档的 front matter。完整字段见[配置文件](../api/configuration.md)。
 
 ## 交付前检查
+
+在项目根目录执行 `npm run check`，检查配置、front matter、文档链接、标题锚点、本地资源和 OpenAPI 合同。错误会阻止检查通过；未知字段会产生警告。该检查不会请求外部链接。
 
 - [ ] 文件扩展名为 `.md` 或 `.markdown`。
 - [ ] front matter 位于第一行，只使用受支持字段。

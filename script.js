@@ -1,5 +1,4 @@
 (function () {
-  const DEFAULT_NAV_INDENT = 12;
   const body = document.body;
   const state = {
     config: null,
@@ -32,6 +31,11 @@
   const searchInput = $("#search-input");
   const searchResults = $("#search-results");
   const toastRegion = $(".toast-region");
+  const createNavigation = window.DocsKitNavigation || (typeof require === "function" ? require("./client-navigation.js") : null);
+  const navigation = createNavigation({ state, window, document, docUrl, staticBuildData, staticUrl, iconSvg, copyTextToClipboard, showToast });
+  const { renderSidebar, renderBreadcrumb, renderToc, observeHeadings, scrollToHash, setActiveNav, setGroupExpanded, collapseSiblingGroups, toggleSidebar } = navigation;
+  const createSearch = window.DocsKitSearchUI || (typeof require === "function" ? require("./client-search.js") : null);
+  const { openSearch, closeSearch } = createSearch({ state, window, document, docUrl, iconSvg, escapeHtml, requestJson, staticBuildData, staticUrl, createAbortController, loadDocument, beforeOpen: () => { navigation.closeMenus(); toggleSidebar(false); } });
 
   const ICON_PATHS = {
     "file-text": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/>',
@@ -194,7 +198,8 @@
 
   function setTheme(theme) {
     body.dataset.theme = theme;
-    try { localStorage.setItem("docs-theme", theme); } catch (error) { /* storage unavailable */ }
+    window.DocsKitApi?.updateTheme?.(theme);
+    try { localStorage.setItem("docs-theme", theme); } catch (error) { /* 存储不可用时仅更新当前页面。 */ }
   }
 
   function getTheme() {
@@ -277,7 +282,11 @@
   async function requestJson(endpoint, options = {}) {
     const response = await fetch(endpoint, { headers: { Accept: "application/json" }, ...options });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(payload.error || `请求失败 (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
     return payload;
   }
 
@@ -329,7 +338,9 @@
     const pageTitle = documentData ? `${documentData.title} - ${siteTitle}` : siteTitle;
     const description = documentData?.description || seo.description || site.description || "Markdown 文档站点";
     const keywords = Array.isArray(seo.keywords) ? seo.keywords.join(", ") : seo.keywords || "";
-    const image = mediaUrl(seo.image || seo.ogImage || site.logo);
+    const canonicalUrl = canonicalPageUrl(documentData);
+    let image = mediaUrl(seo.image || seo.ogImage || site.logo);
+    if (site.url && image && !/^(?:data:|blob:)/i.test(image)) image = new URL(image, site.url).href;
     document.title = pageTitle;
     setMeta("name", "description", description);
     setMeta("name", "keywords", keywords);
@@ -339,7 +350,7 @@
     setMeta("property", "og:title", pageTitle);
     setMeta("property", "og:description", description);
     setMeta("property", "og:type", documentData ? "article" : "website");
-    setMeta("property", "og:url", window.location.href);
+    setMeta("property", "og:url", canonicalUrl);
     setMeta("property", "og:image", image);
     setMeta("name", "twitter:card", image ? "summary_large_image" : "summary");
     setMeta("name", "twitter:title", pageTitle);
@@ -351,7 +362,28 @@
       canonical.rel = "canonical";
       document.head.appendChild(canonical);
     }
-    canonical.href = seo.canonical || window.location.href;
+    canonical.href = canonicalUrl;
+  }
+
+  function canonicalPageUrl(documentData) {
+    const site = state.config.site || {};
+    if (site.url) {
+      const base = new URL(`${site.url.replace(/\/+$/, "")}/`);
+      if (staticBuildData()) return new URL(documentData ? docUrl(documentData.path) : staticUrl(""), base).href;
+      if (documentData) base.searchParams.set("doc", documentData.path);
+      return base.href;
+    }
+    if (site.seo?.canonical) return site.seo.canonical;
+    const location = new URL(window.location.href);
+    location.hash = "";
+    return location.href;
+  }
+
+  function renderHealth(health) {
+    const status = $("#site-status");
+    const degraded = [health?.index?.status, health?.configuration?.status].includes("degraded");
+    status.hidden = !degraded;
+    status.textContent = degraded ? "内容更新暂时延迟，当前展示最近可用内容。稍后刷新可获取最新版本。" : "";
   }
 
   function appendFooterItem(container, value, fallbackLabel) {
@@ -503,15 +535,14 @@
     const actions = $("#topbar-actions");
     actions.innerHTML = "";
     if (topbar.version) {
-      const version = document.createElement("button");
+      const version = document.createElement("span");
       version.className = "version-select topbar-control";
-      version.type = "button";
-      version.dataset.action = "version-info";
-      version.setAttribute("aria-label", "当前版本");
-      version.innerHTML = `<span>${escapeHtml(topbar.version)}</span>${iconSvg("chevron-down", "version-select__icon")}`;
+      version.setAttribute("aria-label", `当前版本 ${topbar.version}`);
+      version.textContent = topbar.version;
       actions.appendChild(version);
     }
-    (Array.isArray(topbar.links) ? topbar.links : []).filter((link) => link && typeof link === "object").forEach((link) => appendTopbarLink(actions, link));
+    const links = (Array.isArray(topbar.links) ? topbar.links : []).filter((link) => link && typeof link === "object");
+    links.forEach((link) => appendTopbarLink(actions, link));
     if (topbar.themeToggle !== false) {
       const theme = document.createElement("button");
       theme.className = "theme-button icon-button";
@@ -530,263 +561,21 @@
       search.innerHTML = `${iconSvg("search", "search-trigger__icon")}<span>搜索</span><kbd>⌘ K</kbd>`;
       actions.appendChild(search);
     }
-  }
-
-  function sidebarConfig() {
-    return state.config.sidebar && typeof state.config.sidebar === "object" ? state.config.sidebar : {};
-  }
-
-  function applyNodeIconColor(element, node) {
-    if (node.iconColor) element.style.setProperty("--nav-icon-color", node.iconColor);
-    else element.style.removeProperty("--nav-icon-color");
-  }
-
-  function applyNavDepth(element, depth) {
-    const configuredIndent = Number(sidebarConfig().indent);
-    const indent = Number.isFinite(configuredIndent) ? Math.max(0, configuredIndent) : DEFAULT_NAV_INDENT;
-    element.style.setProperty("--nav-depth", depth);
-    element.style.setProperty("--nav-offset", `${depth * indent}px`);
-  }
-
-  // 目录状态变化后递归刷新父级高度，保证深层菜单始终完整可见。
-  function refreshNavHeight(group) {
-    const children = group.querySelector(":scope > .side-nav__children");
-    if (!children) return;
-    const heading = group.querySelector(":scope > .side-nav__heading");
-    const expanded = heading?.getAttribute("aria-expanded") === "true";
-    children.style.maxHeight = expanded ? children.scrollHeight + "px" : "0px";
-    const parentGroup = group.parentElement?.closest(".side-nav__group");
-    if (parentGroup) refreshNavHeight(parentGroup);
-  }
-
-  // 子菜单完成高度过渡后再次刷新父级，避免父级停留在过渡开始前的高度。
-  function bindNavTransitionRefresh() {
-    document.querySelectorAll("#sidebar-nav .side-nav__children").forEach((children) => {
-      const refreshParent = (event) => {
-        if (event.target !== children || event.propertyName !== "max-height") return;
-        const group = children.parentElement?.closest(".side-nav__group");
-        if (group) refreshNavHeight(group);
-      };
-      children.addEventListener("transitionend", refreshParent);
-      children.addEventListener("transitioncancel", refreshParent);
-    });
-  }
-
-  function setGroupExpanded(group, expanded) {
-    const heading = group.querySelector(":scope > .side-nav__heading");
-    const children = group.querySelector(":scope > .side-nav__children");
-    if (!heading || !children) return;
-    heading.setAttribute("aria-expanded", String(expanded));
-    children.classList.toggle("is-collapsed", !expanded);
-    refreshNavHeight(group);
-  }
-
-  function collapseSiblingGroups(group) {
-    const parent = group.parentElement;
-    if (!parent) return;
-    parent.querySelectorAll(":scope > .side-nav__group").forEach((sibling) => {
-      if (sibling !== group) setGroupExpanded(sibling, false);
-    });
-  }
-
-  // 手风琴模式只折叠同一层级的兄弟目录，保留当前文档的父级路径。
-  function applyNavExpansionMode() {
-    const nav = $("#sidebar-nav");
-    const groups = Array.from(nav.querySelectorAll(".side-nav__group"));
-    if (sidebarConfig().expandMode !== "accordion") {
-      groups.forEach((group) => setGroupExpanded(group, true));
-      return;
-    }
-    groups.forEach((group) => setGroupExpanded(group, false));
-    const activePath = state.currentPath || state.defaultPath || "";
-    const matched = groups.filter((group) => activePath === group.dataset.groupPath || activePath.startsWith(`${group.dataset.groupPath}/`));
-    if (matched.length) matched.forEach((group) => { collapseSiblingGroups(group); setGroupExpanded(group, true); });
-    else {
-      const firstGroup = nav.querySelector(":scope > .side-nav__group");
-      if (firstGroup) setGroupExpanded(firstGroup, true);
-    }
-  }
-
-  function createSideLink(node, depth) {
-    const link = document.createElement("a");
-    link.className = "side-nav__link";
-    link.href = docUrl(node.path);
-    link.dataset.docPath = node.path;
-    applyNavDepth(link, depth);
-    applyNodeIconColor(link, node);
-    link.innerHTML = iconSvg(node.icon, "side-nav__icon", node.iconColors);
-    const label = document.createElement("span");
-    label.className = "side-nav__label";
-    label.textContent = node.title;
-    link.appendChild(label);
-    return link;
-  }
-
-  function createSideGroup(node, depth) {
-    const group = document.createElement("div");
-    group.className = "side-nav__group side-nav__group--dynamic";
-    group.dataset.groupPath = node.path;
-    const heading = document.createElement("button");
-    heading.className = "side-nav__heading";
-    heading.type = "button";
-    heading.setAttribute("aria-expanded", "true");
-    applyNavDepth(heading, depth);
-    applyNodeIconColor(heading, node);
-    heading.innerHTML = `<span class="side-nav__heading-label">${iconSvg(node.icon, "side-nav__icon", node.iconColors)}</span>`;
-    heading.querySelector(".side-nav__heading-label").appendChild(document.createTextNode(node.title));
-    heading.insertAdjacentHTML("beforeend", iconSvg("chevron-down", "side-nav__chevron"));
-    const children = document.createElement("div");
-    children.className = "side-nav__children side-nav__children--dynamic";
-    renderSideNodes(node.children || [], children, depth + 1);
-    group.appendChild(heading);
-    group.appendChild(children);
-    return group;
-  }
-
-  function renderSideNodes(nodes, container, depth) {
-    nodes.forEach((node) => container.appendChild(node.type === "directory" ? createSideGroup(node, depth) : createSideLink(node, depth)));
-  }
-
-  function renderSidebar() {
-    const site = state.config.site || {};
-    $("#sidebar-intro").innerHTML = `<span class="sidebar__eyebrow">${escapeHtml(site.eyebrow || "DOCUMENTATION")}</span><h2>${escapeHtml(site.title || "我的文档")}</h2>`;
-    const nav = $("#sidebar-nav");
-    nav.innerHTML = "";
-    if (!state.tree.length) {
-      nav.innerHTML = '<div class="nav-empty">文档目录中还没有 Markdown 文件</div>';
-    } else {
-      renderSideNodes(state.tree, nav, 0);
-      bindNavTransitionRefresh();
-    }
-    const indent = Number(sidebarConfig().indent);
-    nav.style.setProperty("--nav-indent", `${Number.isFinite(indent) ? Math.max(0, indent) : DEFAULT_NAV_INDENT}px`);
-    applyNavExpansionMode();
-    $("#sidebar-footer").innerHTML = "";
-  }
-
-  function renderBreadcrumb(documentData) {
-    const breadcrumb = $("#breadcrumb");
-    breadcrumb.innerHTML = "";
-    const home = document.createElement("a");
-    home.href = staticBuildData() ? staticUrl("") : "/";
-    home.textContent = "文档";
-    breadcrumb.appendChild(home);
-    const parts = documentData.path.split("/");
-    parts.slice(0, -1).forEach((part) => {
-      breadcrumb.appendChild(document.createTextNode("/"));
-      const span = document.createElement("span");
-      span.textContent = part.replace(/[-_]+/g, " ");
-      breadcrumb.appendChild(span);
-    });
-    breadcrumb.appendChild(document.createTextNode("/"));
-    const current = document.createElement("strong");
-    current.textContent = documentData.title;
-    breadcrumb.appendChild(current);
-  }
-
-  function renderToc(headings) {
-    const list = $("#toc-list");
-    state.tocScrollTarget = "";
-    state.tocScrollRequestId += 1;
-    list.innerHTML = "";
-    const visibleHeadings = (headings || []).filter((heading) => heading.level >= 2 && heading.level <= 4);
-    if (!visibleHeadings.length) {
-      list.innerHTML = '<span class="toc-empty">当前页面没有小节</span>';
-      return;
-    }
-    visibleHeadings.forEach((heading) => {
-      const link = document.createElement("a");
-      link.className = "toc__link";
-      link.href = `#${heading.id}`;
-      link.dataset.headingId = heading.id;
-      link.style.setProperty("--toc-level", Math.max(0, heading.level - 2));
-      link.textContent = heading.title;
-      link.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        navigateToHeading(heading.id, link.getAttribute("href"));
-      });
-      list.appendChild(link);
-    });
-  }
-
-  function setActiveToc(headingId) {
-    document.querySelectorAll(".toc__link").forEach((link) => link.classList.toggle("is-active", link.dataset.headingId === headingId));
-  }
-
-  function navigateToHeading(headingId, href) {
-    const target = document.getElementById(headingId);
-    if (!target) return;
-    state.tocScrollTarget = headingId;
-    state.tocScrollRequestId += 1;
-    const requestId = state.tocScrollRequestId;
-    setActiveToc(headingId);
-    window.history.pushState({}, "", href || `#${encodeURIComponent(headingId)}`);
-    window.requestAnimationFrame(() => {
-      if (requestId !== state.tocScrollRequestId) return;
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  }
-
-  function observeHeadings() {
-    if (state.headingObserver) state.headingObserver.disconnect();
-    const links = Array.from(document.querySelectorAll(".toc__link"));
-    const headings = Array.from($("#doc-content").querySelectorAll("h2[id], h3[id], h4[id]"));
-    if (!headings.length) return;
-    state.headingObserver = new IntersectionObserver((entries) => {
-      const requested = entries.find((entry) => entry.isIntersecting && entry.target.id === state.tocScrollTarget);
-      if (requested) {
-        state.tocScrollTarget = "";
-        setActiveToc(requested.target.id);
-        return;
-      }
-      if (state.tocScrollTarget) return;
-      const current = entries.filter((entry) => entry.isIntersecting).sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
-      if (!current) return;
-      setActiveToc(current.target.id);
-    }, { rootMargin: "-96px 0px -62% 0px", threshold: [0, .2, .5, .9] });
-    headings.forEach((heading) => state.headingObserver.observe(heading));
-  }
-
-  function scrollToHash(hashValue, behavior) {
-    const rawId = String(hashValue || "").replace(/^#/, "");
-    if (!rawId) {
-      window.scrollTo({ top: 0, behavior: behavior || "instant" });
-      return;
-    }
-    let id = rawId;
-    try { id = decodeURIComponent(rawId); } catch (error) { /* keep the raw id */ }
-    const target = document.getElementById(id);
-    if (target) target.scrollIntoView({ behavior: behavior || "smooth", block: "start" });
-  }
-
-  function setActiveNav(pathValue) {
-    document.querySelectorAll(".side-nav__link[data-doc-path]").forEach((link) => {
-      const active = link.dataset.docPath === pathValue;
-      link.classList.toggle("is-active", active);
-      if (active) link.setAttribute("aria-current", "page");
-      else link.removeAttribute("aria-current");
-    });
-    const accordion = sidebarConfig().expandMode === "accordion";
-    document.querySelectorAll(".side-nav__group[data-group-path]").forEach((group) => {
-      const matches = pathValue === group.dataset.groupPath || pathValue.startsWith(`${group.dataset.groupPath}/`);
-      const children = group.querySelector(":scope > .side-nav__children");
-      const heading = group.querySelector(":scope > .side-nav__heading");
-      if (matches && children && heading) {
-        if (accordion) collapseSiblingGroups(group);
-        setGroupExpanded(group, true);
-      }
-    });
-    const activeLink = Array.from(document.querySelectorAll(".side-nav__link[data-doc-path]"))
-      .find((link) => link.dataset.docPath === pathValue);
-    if (activeLink && typeof activeLink.scrollIntoView === "function") {
-      window.requestAnimationFrame(() => activeLink.scrollIntoView({ block: "nearest", inline: "nearest" }));
-    }
+    const menu = document.createElement("button");
+    menu.className = "mobile-topbar-trigger icon-button";
+    menu.type = "button";
+    menu.dataset.action = "toggle-topbar-menu";
+    menu.setAttribute("aria-label", "网站链接");
+    menu.setAttribute("aria-controls", "mobile-topbar-links");
+    menu.setAttribute("aria-expanded", "false");
+    menu.innerHTML = iconSvg("list", "topbar-menu-icon");
+    actions.appendChild(menu);
+    navigation.renderTopbarMenu(links, appendTopbarLink);
   }
 
   // 文档中的图标标记复用导航图标注册表，避免维护第二份 SVG 路径。
   function renderMarkdownIcons(container) {
-    const config = sidebarConfig();
+    const config = state.config.sidebar || {};
     const colors = config.iconColor ? [config.iconColor] : config.iconPalette;
     container.querySelectorAll("[data-icon-name]").forEach((element) => {
       const name = element.dataset.iconName || "file-text";
@@ -900,37 +689,78 @@
     });
   }
 
-  function renderDocument(documentData) {
+  function renderDocument(documentData, scrollPosition) {
+    window.DocsKitApi?.unmount();
+    state.failedDocument = null;
     state.currentDocument = documentData;
     renderBreadcrumb(documentData);
     const category = documentData.path.includes("/") ? documentData.path.split("/").slice(0, -1).join(" / ") : "DOCUMENT";
     const hasH1 = (documentData.headings || []).some((heading) => heading.level === 1);
     const article = $("#doc-content");
+    article.setAttribute("aria-busy", "false");
     article.innerHTML = `<section class="doc-section markdown-section" id="doc-page" data-title="${escapeHtml(documentData.title)}"><div class="section-kicker"><span class="kicker-line"></span>${escapeHtml(category)}</div>${hasH1 ? "" : `<h1 class="doc-title">${escapeHtml(documentData.title)}</h1>${documentData.description ? `<p class="lead doc-description">${escapeHtml(documentData.description)}</p>` : ""}`}<div class="doc-meta"><span>${escapeHtml(documentData.path)}</span><span>·</span><span>更新于 ${new Date(documentData.updatedAt).toLocaleDateString("zh-CN")}</span></div><div class="markdown-body">${documentData.html}</div></section>`;
     renderMarkdownIcons(article);
     renderMermaid(article);
     highlightCodeBlocks(article);
+    navigation.renderReadingTools(documentData);
     renderToc(documentData.headings);
     setActiveNav(documentData.path);
     observeHeadings();
     renderSeo(documentData);
-    if (window.location.hash) window.requestAnimationFrame(() => scrollToHash(window.location.hash, "instant"));
-    else window.scrollTo({ top: 0, behavior: "instant" });
+    if (documentData.apiReference && window.DocsKitApi) {
+      const apiContainer = document.createElement("section");
+      apiContainer.className = "api-reference";
+      // Scalar 将 api-reference 视为遗留自动挂载入口，必须避开该保留标识。
+      apiContainer.id = "docskit-api-reference";
+      article.querySelector("#doc-page").appendChild(apiContainer);
+      mountApiReference(apiContainer, documentData.apiReference);
+    }
+    navigation.restoreReadingPosition(scrollPosition, window.location.hash);
+  }
+
+  function mountApiReference(container, reference) {
+    Promise.resolve().then(() => {
+      if (container.isConnected) return window.DocsKitApi.mount(container, reference, { base: staticBuildData()?.base || "/", theme: body.dataset.theme });
+    }).catch(() => {
+      if (!container.isConnected) return;
+      container.innerHTML = '<p role="status">API 参考暂时无法加载，正文仍可正常阅读。</p><button class="button button--secondary" type="button">重新加载</button>';
+      container.querySelector("button").addEventListener("click", () => mountApiReference(container, reference));
+    });
   }
 
   function renderEmptyDocument(message) {
+    window.DocsKitApi?.unmount();
     state.currentDocument = null;
     state.currentPath = "";
     $("#doc-content").innerHTML = `<section class="doc-section empty-document"><div class="empty-document__icon">${iconSvg("file-text", "empty-document__icon-svg")}</div><h1>还没有 Markdown 文档</h1><p>${escapeHtml(message)}</p><code>docs/your-file.md</code></section>`;
-    $("#toc-list").innerHTML = '<span class="toc-empty">暂无目录</span>';
+    $("#doc-content").setAttribute("aria-busy", "false");
+    $("#breadcrumb").replaceChildren();
+    renderToc([]);
+    setActiveNav("");
+    state.headingObserver?.disconnect();
     if (state.config) renderSeo();
+  }
+
+  function renderDocumentError(error, request) {
+    window.DocsKitApi?.unmount();
+    state.failedDocument = request;
+    state.headingObserver?.disconnect();
+    renderToc([]);
+    setActiveNav("");
+    $("#breadcrumb").replaceChildren();
+    const title = error.status === 404 ? "找不到文档" : request.bootstrap ? "文档站点暂时无法加载" : "文档暂时无法加载";
+    const article = $("#doc-content");
+    article.setAttribute("aria-busy", "false");
+    article.innerHTML = `<section class="doc-section document-error" role="status"><h1>${title}</h1><p>${escapeHtml(error.message || "请检查网络连接后重试。")}</p><div class="document-error__actions"><button class="button button--primary" type="button" data-action="retry-document">重试</button><a class="button button--secondary" href="${escapeHtml(staticBuildData() ? staticUrl("") : "/")}">返回首页</a><button class="button button--secondary" type="button" data-action="open-search">搜索文档</button></div></section>`;
+    if (window.innerWidth <= 680) toggleSidebar(false);
   }
 
   function createAbortController() {
     return typeof window.AbortController === "function" ? new window.AbortController() : null;
   }
 
-  async function loadDocument(pathValue, pushState, hashValue) {
+  async function loadDocument(pathValue, pushState, hashValue, scrollPosition) {
+    if (pushState && !state.failedDocument) navigation.saveReadingPosition();
     const requestId = ++state.documentRequestId;
     if (state.documentAbortController) state.documentAbortController.abort();
     const controller = createAbortController();
@@ -940,6 +770,8 @@
       state.documentAbortController = null;
       return;
     }
+    window.DocsKitApi?.unmount();
+    $("#doc-content").setAttribute("aria-busy", "true");
     $("#doc-content").innerHTML = '<div class="loading-state"><span class="loading-spinner"></span>正在加载文档...</div>';
     try {
       const endpoint = staticBuildData()
@@ -949,8 +781,9 @@
       if (requestId !== state.documentRequestId) return;
       state.currentPath = documentData.path;
       if (pushState) window.history.pushState({}, "", docUrl(documentData.path, hashValue));
-      renderDocument(documentData);
-      if (window.innerWidth <= 680) toggleSidebar(false);
+      renderDocument(documentData, scrollPosition);
+      if (window.innerWidth <= 680) toggleSidebar(false, false);
+      if (pushState) $("#doc-content").focus({ preventScroll: true });
     } catch (error) {
       if (requestId !== state.documentRequestId) return;
       if (error.name === "AbortError") {
@@ -958,165 +791,11 @@
         else renderEmptyDocument("文档加载已取消");
         return;
       }
-      renderEmptyDocument(error.message || "文档加载失败");
+      renderDocumentError(error, { pathValue, pushState, hashValue });
       showToast(error.message || "文档加载失败", "error");
     } finally {
       if (state.documentAbortController === controller) state.documentAbortController = null;
     }
-  }
-
-  function openSearch() {
-    if (state.searchAbortController) state.searchAbortController.abort();
-    state.searchRequestId += 1;
-    state.searchPreviousFocus = document.activeElement;
-    searchModal.classList.add("is-open");
-    searchModal.setAttribute("aria-hidden", "false");
-    body.classList.add("is-modal-open");
-    searchInput.value = "";
-    state.searchResults = [];
-    state.selectedSearchIndex = 0;
-    searchResults.innerHTML = '<span class="search-empty">输入关键词，搜索全部 Markdown 文档</span>';
-    window.setTimeout(() => searchInput.focus(), 20);
-  }
-
-  function closeSearch() {
-    window.clearTimeout(state.searchTimer);
-    state.searchTimer = null;
-    state.searchRequestId += 1;
-    if (state.searchAbortController) state.searchAbortController.abort();
-    state.searchAbortController = null;
-    searchModal.classList.remove("is-open");
-    searchModal.setAttribute("aria-hidden", "true");
-    body.classList.remove("is-modal-open");
-    const previousFocus = state.searchPreviousFocus;
-    state.searchPreviousFocus = null;
-    if (previousFocus && typeof previousFocus.focus === "function" && document.contains(previousFocus)) previousFocus.focus();
-  }
-
-  function renderSearchResults(results) {
-    searchResults.innerHTML = "";
-    if (!results.length) {
-      searchResults.innerHTML = '<span class="search-empty">没有找到相关内容，试试其他关键词</span>';
-      return;
-    }
-    results.forEach((result, index) => {
-      const item = document.createElement("a");
-      item.className = `search-result${index === state.selectedSearchIndex ? " is-selected" : ""}`;
-      item.setAttribute("role", "option");
-      item.setAttribute("aria-selected", String(index === state.selectedSearchIndex));
-      item.href = docUrl(result.path);
-      item.dataset.docPath = result.path;
-      if (result.iconColor) item.style.setProperty("--nav-icon-color", result.iconColor);
-      item.innerHTML = iconSvg(result.icon, "search-result__icon", result.iconColors);
-      const copy = document.createElement("span");
-      copy.className = "search-result__copy";
-      const title = document.createElement("strong");
-      title.textContent = result.title;
-      const pathText = document.createElement("small");
-      pathText.textContent = result.path;
-      const snippet = document.createElement("em");
-      snippet.textContent = result.snippet || result.description || "";
-      copy.append(title, pathText, snippet);
-      item.appendChild(copy);
-      item.insertAdjacentHTML("beforeend", iconSvg("chevron-right", "search-result__arrow"));
-      searchResults.appendChild(item);
-    });
-  }
-
-  function countSearchTerm(value, term) {
-    let count = 0;
-    let offset = 0;
-    while (term && offset < value.length) {
-      const matchIndex = value.indexOf(term, offset);
-      if (matchIndex < 0) break;
-      count += 1;
-      offset = matchIndex + term.length;
-    }
-    return count;
-  }
-
-  function staticSearchSnippet(plainBody, query) {
-    const text = String(plainBody || "").replace(/\n/g, " ");
-    const lower = text.toLocaleLowerCase();
-    const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    const matchIndex = Math.max(0, ...terms.map((term) => lower.indexOf(term)).filter((value) => value >= 0));
-    const start = Math.max(0, matchIndex - 54);
-    const end = Math.min(text.length, start + 150);
-    return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
-  }
-
-  function makeStaticSearchResults(documents, query) {
-    const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) return [];
-    const terms = normalized.split(/\s+/).filter(Boolean);
-    return documents.map((document) => {
-      const title = String(document.title || "");
-      const pathValue = String(document.path || "");
-      const plainBody = String(document.plainBody || "");
-      const haystack = String(document.searchText || `${title}\n${pathValue}\n${plainBody}`).toLocaleLowerCase();
-      if (!terms.every((term) => haystack.includes(term))) return null;
-      let score = 0;
-      if (title.toLocaleLowerCase().includes(normalized)) score += 80;
-      if (pathValue.toLocaleLowerCase().includes(normalized)) score += 45;
-      terms.forEach((term) => { score += countSearchTerm(haystack, term); });
-      return {
-        path: pathValue,
-        title,
-        description: String(document.description || ""),
-        snippet: staticSearchSnippet(plainBody, normalized),
-        score,
-        icon: document.icon,
-        iconColor: document.iconColor || "",
-        iconColors: Array.isArray(document.iconColors) ? document.iconColors : []
-      };
-    }).filter(Boolean).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, 30);
-  }
-
-  async function loadStaticSearchIndex() {
-    if (!state.staticSearchPromise) {
-      state.staticSearchPromise = requestJson(staticUrl("search-index.json")).then((payload) => Array.isArray(payload) ? payload : payload.documents || []).catch((error) => {
-        state.staticSearchPromise = null;
-        throw error;
-      });
-    }
-    return state.staticSearchPromise;
-  }
-
-  async function runSearch(query) {
-    const requestId = ++state.searchRequestId;
-    if (state.searchAbortController) state.searchAbortController.abort();
-    const controller = createAbortController();
-    state.searchAbortController = controller;
-    const normalized = query.trim();
-    if (!normalized) {
-      state.searchResults = [];
-      searchResults.innerHTML = '<span class="search-empty">输入关键词，搜索全部 Markdown 文档</span>';
-      state.searchAbortController = null;
-      return;
-    }
-    searchResults.innerHTML = '<span class="search-empty"><span class="loading-spinner"></span>正在搜索正文...</span>';
-    try {
-      const payload = staticBuildData()
-        ? { results: makeStaticSearchResults(await loadStaticSearchIndex(), normalized) }
-        : await requestJson(`/api/search?q=${encodeURIComponent(normalized)}`, controller ? { signal: controller.signal } : {});
-      if (requestId !== state.searchRequestId) return;
-      state.searchResults = payload.results || [];
-      state.selectedSearchIndex = 0;
-      renderSearchResults(state.searchResults);
-    } catch (error) {
-      if (requestId !== state.searchRequestId || error.name === "AbortError") return;
-      searchResults.innerHTML = `<span class="search-empty">${escapeHtml(error.message || "搜索失败")}</span>`;
-    } finally {
-      if (state.searchAbortController === controller) state.searchAbortController = null;
-    }
-  }
-
-  function toggleSidebar(force) {
-    const menuButton = $('[data-action="toggle-sidebar"]');
-    const open = typeof force === "boolean" ? force : !sidebar.classList.contains("is-open");
-    sidebar.classList.toggle("is-open", open);
-    overlay.classList.toggle("is-open", open);
-    if (menuButton) menuButton.setAttribute("aria-expanded", String(open));
   }
 
   document.addEventListener("click", (event) => {
@@ -1128,11 +807,16 @@
       if (action === "open-search") openSearch();
       if (action === "close-search") closeSearch();
       if (action === "toggle-theme") setTheme(body.dataset.theme === "dark" ? "light" : "dark");
-      if (action === "version-info") showToast(`当前版本 ${state.config.topbar.version}`);
+      if (action === "toggle-topbar-menu") navigation.toggleTopbarMenu();
+      if (action === "retry-document" && state.failedDocument) {
+        const failed = state.failedDocument;
+        if (failed.bootstrap) window.location.reload();
+        else loadDocument(failed.pathValue, failed.pushState, failed.hashValue);
+      }
     }
 
     const documentLink = event.target.closest("[data-doc-path]");
-    if (documentLink) {
+    if (documentLink && !event.defaultPrevented && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !documentLink.hasAttribute("download") && (!documentLink.target || documentLink.target === "_self")) {
       event.preventDefault();
       let hash = "";
       try { hash = new URL(documentLink.getAttribute("href") || "", window.location.href).hash; } catch (error) { /* 使用无锚点导航 */ }
@@ -1145,7 +829,7 @@
       const expanded = groupHeading.getAttribute("aria-expanded") === "true";
       const group = groupHeading.closest(".side-nav__group");
       if (group) {
-        if (!expanded && sidebarConfig().expandMode === "accordion") collapseSiblingGroups(group);
+        if (!expanded && state.config.sidebar?.expandMode === "accordion") collapseSiblingGroups(group);
         setGroupExpanded(group, !expanded);
       }
     }
@@ -1162,31 +846,12 @@
     }
   });
 
-  searchInput.addEventListener("input", (event) => {
-    window.clearTimeout(state.searchTimer);
-    state.searchTimer = window.setTimeout(() => runSearch(event.target.value), 180);
-  });
-
-  searchInput.addEventListener("keydown", (event) => {
-    if (!state.searchResults.length) return;
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      state.selectedSearchIndex = (state.selectedSearchIndex + direction + state.searchResults.length) % state.searchResults.length;
-      renderSearchResults(state.searchResults);
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      const result = state.searchResults[state.selectedSearchIndex];
-      if (result) { closeSearch(); loadDocument(result.path, true); }
-    }
-  });
-
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openSearch(); }
-    if (event.key === "Escape") { closeSearch(); toggleSidebar(false); }
+    if (event.key === "Escape") closeSearch();
+    navigation.handleKeydown(event);
     if (event.key === "Tab" && searchModal.classList.contains("is-open")) {
-      const focusable = [searchInput, ...Array.from(searchModal.querySelectorAll("a[href], button:not([disabled])"))].filter((element) => !element.hidden);
+      const focusable = [searchInput, ...Array.from(searchModal.querySelectorAll("button:not([disabled])"))].filter((element) => !element.hidden);
       if (!focusable.length) return;
       const currentIndex = focusable.indexOf(document.activeElement);
       const nextIndex = (currentIndex + (event.shiftKey ? -1 : 1) + focusable.length) % focusable.length;
@@ -1195,10 +860,10 @@
     }
   });
 
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", (event) => {
     const pathValue = new URLSearchParams(window.location.search).get("doc") || (staticBuildData() ? staticDocumentPathFromLocation() : state.defaultPath);
-    if (pathValue === state.currentPath) scrollToHash(window.location.hash, "smooth");
-    else loadDocument(pathValue, false, window.location.hash);
+    if (pathValue === state.currentPath && !state.failedDocument) navigation.restoreReadingPosition(event.state?.docskitScroll, window.location.hash);
+    else loadDocument(pathValue, false, window.location.hash, event.state?.docskitScroll);
   });
 
   (async function bootstrap() {
@@ -1234,6 +899,7 @@
       state.tree = payload.tree || [];
       state.documents = payload.documents || [];
       state.defaultPath = payload.defaultPath || "";
+      renderHealth(payload.health);
       applyThemeColor(state.config.site?.themeColor);
       renderBrand();
       renderTopbar();
@@ -1243,14 +909,14 @@
       const currentDocument = payload.currentDocument && payload.currentDocument.path === requestedPath ? payload.currentDocument : null;
       if (currentDocument) {
         state.currentPath = currentDocument.path;
-        renderDocument(currentDocument);
+        renderDocument(currentDocument, window.history.state?.docskitScroll);
       } else if (requestedPath) {
-        await loadDocument(requestedPath, false, window.location.hash);
+        await loadDocument(requestedPath, false, window.location.hash, window.history.state?.docskitScroll);
       } else {
         renderEmptyDocument("把 .md 文件放入配置的文档目录，然后刷新页面。");
       }
     } catch (error) {
-      renderEmptyDocument("请使用 `npm run dev` 启动文档服务后再打开此页面。");
+      renderDocumentError(error, { bootstrap: true });
       showToast(error.message || "无法连接文档服务", "error");
     }
   })();

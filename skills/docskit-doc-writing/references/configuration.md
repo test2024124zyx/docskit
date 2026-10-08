@@ -27,6 +27,8 @@
 - 如果项目已经约定了其他文档目录或配置文件位置，沿用项目现有约定。
 - 配置文件只写需要覆盖的字段，保持 JSON 语法有效。
 
+配置更新无效或文件不可读时，运行服务保留上一份有效配置并标记更新延迟；首次读取已有但无效的配置会明确报错，不会静默切回默认文档目录。未提供配置文件时可以使用默认配置。发布前运行 `npm run check`，不要把旧页面仍可访问当作新配置已生效。
+
 ## 文档目录限制
 
 DocsKit 对文档目录和规模设置运行时固定限制，这些限制不是 `docs.config.json` 字段，不能通过配置文件覆盖：
@@ -34,7 +36,7 @@ DocsKit 对文档目录和规模设置运行时固定限制，这些限制不是
 - 文档路径上方最多允许 5 个目录层级，例如 `a/b/c/d/e/doc.md` 可以使用；超过第 5 个目录层级的 Markdown 文件会被拒绝。
 - 服务和静态构建最多加载 1000 篇 Markdown 文档。
 - `hidden: true` 的文档和超过单文件大小限制的 Markdown 文件也会计入文档数量上限。
-- 超过任一限制时，服务接口返回明确错误，静态构建终止，不会生成不完整的导航树。
+- 超过任一限制时，首次索引建立失败，静态构建终止；运行服务已有有效索引时保留旧版本、提示更新延迟并退避重试，不会发布不完整的导航树。
 
 规划文档目录时应优先复用已有层级，并在新增文档前检查总数量；不要通过增加目录层级或隐藏文档绕过限制。
 
@@ -45,7 +47,10 @@ DocsKit 对文档目录和规模设置运行时固定限制，这些限制不是
 ```json
 {
   "docsDir": "docs",
+  "home": "README.md",
+  "limits": { "indexBytes": 67108864, "renderCacheBytes": 33554432 },
   "site": {
+    "url": "https://docs.example.com/",
     "brand": { "name": "Acme", "accent": "Docs" },
     "context": "开发者中心",
     "eyebrow": "DOCUMENTATION",
@@ -60,7 +65,6 @@ DocsKit 对文档目录和规模设置运行时固定限制，这些限制不是
       "image": "assets/og-image.png",
       "author": "Acme",
       "robots": "index,follow",
-      "canonical": "https://docs.example.com/",
       "themeColor": "#3370ff"
     },
     "footer": {
@@ -117,6 +121,8 @@ DocsKit 对文档目录和规模设置运行时固定限制，这些限制不是
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `docsDir` | string | `"docs"` | 文档目录，相对于项目根目录。 |
+| `home` | string | `""` | 首页文档的相对路径，目标必须存在且可见。 |
+| `limits` | object | 见下文 | 索引输入和渲染缓存的字节预算。 |
 | `site` | object | 见下文 | 品牌、资源、SEO 和页脚。 |
 | `topbar` | object | `{}` | 顶部版本、链接、搜索和主题开关。 |
 | `markdown` | object | 见下文 | Markdown 代码块显示选项。 |
@@ -124,12 +130,22 @@ DocsKit 对文档目录和规模设置运行时固定限制，这些限制不是
 
 未列出的顶层字段不会改变 DocsKit 的站点配置。缺失字段使用默认值；数组字段应直接写数组，不要写成逗号分隔字符串。
 
+未设置 `home` 时，优先使用根目录的 `index.md` 或 `README.md`，再使用导航排序中的第一篇。`home` 不会改变导航顺序。
+
+| 字节预算字段 | 默认值 | 作用 |
+| --- | --- | --- |
+| `limits.indexBytes` | `67108864`（64 MiB） | 限制索引输入内容与 OpenAPI 引用文件的累计大小。 |
+| `limits.renderCacheBytes` | `33554432`（32 MiB） | 限制已渲染页面缓存的总大小。 |
+
+两项预算均为正整数，单位是字节；它们不改变 5 级目录与 1000 篇文档的固定限制。内容或合同热更新失败时会保留上一版索引，页面提示更新延迟；修复后会重新尝试建立索引。
+
 ## 站点品牌、资源和 SEO
 
 ### 品牌字段
 
 | 字段 | 类型 | 用途 |
 | --- | --- | --- |
+| `site.url` | string | 可信的 HTTP(S) 站点根地址，可含部署路径，不含凭据、查询参数和锚点；用于逐页 canonical、sitemap 及导出链接。 |
 | `site.brand.name` | string | 顶部品牌名称的前半部分。 |
 | `site.brand.accent` | string | 顶部品牌强调色文字的后半部分。 |
 | `site.context` | string | 顶部品牌右侧的站点上下文，例如“知识库”。 |
@@ -186,10 +202,12 @@ DocsKit 对文档目录和规模设置运行时固定限制，这些限制不是
 | `ogImage` | string 或 image object | `image` 为空时的兼容别名。 |
 | `author` | string | `author` meta 标签。 |
 | `robots` | string | `robots` meta 标签；空值默认 `index,follow`。 |
-| `canonical` | string | canonical URL；空值使用当前页面 URL。 |
+| `canonical` | string | 兼容旧版的固定 canonical；新站点使用 `site.url`，按每篇文档生成独立地址。 |
 | `themeColor` | string | 浏览器主题色 meta 标签。 |
 
 SEO 图片为空时会退回 `site.logo`。文档页的摘要优先级为 `front matter.description`、`site.seo.description`、`site.description`。不要把单篇文档的内容摘要写进全局 SEO，除非所有页面确实共用同一描述。
+
+`site.url` 优先于旧版 `site.seo.canonical`。静态构建默认采用其中的域名与部署路径，可由构建参数覆盖；生产站点应设置可信地址，不依赖请求的 Host 推断公网地址。
 
 ## 页脚
 

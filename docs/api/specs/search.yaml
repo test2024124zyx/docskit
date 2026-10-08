@@ -1,0 +1,103 @@
+openapi: 3.0.3
+info:
+  title: DocsKit 文档搜索
+  version: 1.0.0
+  description: 查询当前动态服务中的可见文档，静态部署使用浏览器本地索引。
+servers:
+  - url: /
+    description: 当前 DocsKit 动态服务
+paths:
+  /api/search:
+    get:
+      operationId: searchDocuments
+      summary: 查询文档
+      description: 多个词以空白分隔，所有词必须在同一篇文档中出现，最多返回 30 条结果。
+      tags: [文档]
+      parameters:
+        - in: query
+          name: q
+          description: 查询关键词，空字符串返回空列表。
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+            default: ''
+          example: 安装
+      responses:
+        '200':
+          description: 查询完成。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query, results]
+                properties:
+                  query:
+                    type: string
+                  results:
+                    type: array
+                    maxItems: 30
+                    items:
+                      $ref: '#/components/schemas/SearchResult'
+              example:
+                query: 不存在的关键词
+                results: []
+        '400':
+          description: 查询超过 200 个字符。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 无法建立文档索引，请检查服务配置和日志。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: 文档目录层级、数量、字节预算或服务器配置不合法。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: 站点配置无效或无法读取，且没有上一份可用配置。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    SearchResult:
+      type: object
+      required: [path, title, description, snippet, score, hash, sectionTitle]
+      properties:
+        path:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        snippet:
+          type: string
+        score:
+          type: number
+        hash:
+          type: string
+          description: 带井号前缀的章节锚点，无章节时为空。
+        sectionTitle:
+          type: string
+        icon:
+          type: string
+        iconColor:
+          type: string
+        iconColors:
+          type: array
+          items:
+            type: string

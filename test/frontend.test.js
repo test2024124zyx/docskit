@@ -400,7 +400,7 @@ test("前端渲染站点品牌、SEO、页脚、图标和常用交互", async ()
     const gradientId = gradientIcon.dataset.iconGradient;
     const gradientPaint = gradientIcon.querySelector("g");
     assert.ok(gradientPaint);
-    assert.equal(gradientPaint.style.stroke, `url(#${gradientId})`);
+    assert.equal(gradientPaint.style.stroke.replaceAll('"', ""), `url(#${gradientId})`);
     assert.deepEqual(
       Array.from(gradientIcon.querySelectorAll("stop")).map((stop) => stop.getAttribute("stop-color")),
       ["#3370ff", "#7c3aed", "#0f9d8a"]
@@ -423,6 +423,8 @@ test("前端渲染站点品牌、SEO、页脚、图标和常用交互", async ()
     mounted.document.dispatchEvent(new mounted.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(searchModal.classList.contains("is-open"), false);
     const menuButton = mounted.document.querySelector('[data-action="toggle-sidebar"]');
+    mounted.window.innerWidth = 600;
+    mounted.window.dispatchEvent(new mounted.window.Event("resize"));
     menuButton.click();
     assert.equal(mounted.document.querySelector("#sidebar").classList.contains("is-open"), true);
     mounted.document.querySelector('[data-action="close-sidebar"]').click();
@@ -516,7 +518,7 @@ test("前端覆盖空目录、加载失败、目录锚点和键盘搜索状态",
     fetchMode: (endpoint) => endpoint === "/api/bootstrap" ? failureResponse("启动失败", 503) : null
   });
   try {
-    assert.ok(bootstrapFailure.document.querySelector(".empty-document"));
+    assert.ok(bootstrapFailure.document.querySelector(".document-error"));
     assert.match(bootstrapFailure.document.querySelector(".toast--error").textContent, /无法连接文档服务|启动失败/);
   } finally {
     bootstrapFailure.cleanup();
@@ -531,7 +533,7 @@ test("前端覆盖空目录、加载失败、目录锚点和键盘搜索状态",
     fetchMode: (endpoint) => endpoint.startsWith("/api/document") ? failureResponse("文档加载失败", 404) : null
   });
   try {
-    assert.ok(documentFailure.document.querySelector(".empty-document"));
+    assert.ok(documentFailure.document.querySelector(".document-error"));
     assert.match(documentFailure.document.querySelector(".toast--error").textContent, /文档加载失败/);
   } finally {
     documentFailure.cleanup();
@@ -562,7 +564,8 @@ test("前端覆盖空目录、加载失败、目录锚点和键盘搜索状态",
     }
   });
   try {
-    assert.equal(rich.document.querySelectorAll(".toc__link").length, 2);
+    assert.equal(rich.document.querySelectorAll("#toc-list .toc__link").length, 2);
+    assert.equal(rich.document.querySelectorAll("#mobile-toc-list .toc__link").length, 2);
     assert.equal(rich.window.__intersectionObservers.length, 1);
     const section = rich.document.getElementById("section");
     rich.window.__intersectionObservers[0].callback([
@@ -583,8 +586,8 @@ test("前端覆盖空目录、加载失败、目录锚点和键盘搜索状态",
     assert.equal(tocLink.classList.contains("is-active"), true);
     rich.window.__intersectionObservers[0].callback([{ isIntersecting: true, intersectionRatio: 0.9, target: section }]);
     assert.equal(tocLink.classList.contains("is-active"), true);
-    rich.document.querySelector('.version-select[data-action="version-info"]').click();
-    assert.ok(rich.document.querySelector(".toast"));
+    assert.equal(rich.document.querySelector(".version-select").tagName, "SPAN");
+    assert.equal(rich.document.querySelector(".version-select").textContent, "v1.0.0");
 
     const searchInput = rich.document.querySelector("#search-input");
     rich.document.querySelector('[data-action="open-search"]').click();

@@ -10,7 +10,9 @@ DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。它会递�
 - 支持 front matter 配置标题、摘要、排序和图标。
 - 支持在普通 Markdown 文本中使用 `:icon[name]` 展示内置图标。
 - 侧边栏图标、顶部导航、品牌信息和主题开关均可配置。
-- 服务端全文搜索标题、路径和 Markdown 正文。
+- 动态服务和静态站使用相同的搜索规则，覆盖标题、路径、章节正文和代码，搜索结果可直达命中章节。
+- 支持带文件名的多语言代码组、语言偏好记忆，以及 Markdown 复制与下载。
+- 支持本地 OpenAPI 3.0/3.1 合同校验、API 参考、代码示例和在线请求调试，详见 [OpenAPI 指南](docs/guides/openapi.md)。
 - 首页和文档页支持服务端初始渲染，站点 SEO 可被搜索引擎直接读取。
 - 文档索引按需构建并缓存在内存中，文件变化后下一次请求自动失效重建。
 - 文档目录最多支持 5 级，最多加载 1000 篇 Markdown 文档；超出限制时服务和静态构建会明确报错。
@@ -25,16 +27,24 @@ DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。它会递�
 
 ### 启动服务
 
+先克隆仓库并使用锁文件安装依赖：
+
 ```bash
+git clone https://github.com/test2024124zyx/docskit.git
+cd docskit
+npm ci
 npm run dev
 ```
 
 提交或部署前可以运行构建校验和完整测试：
 
 ```bash
+npm run check
 npm run build
 npm test
 ```
+
+`npm run check` 检查文档内容、站内链接、锚点、资源与配置；`npm test` 对业务测试执行覆盖率门禁。持续集成在 Windows 和 Linux 上执行这些检查，发布前还会实际启动容器验证就绪状态和运行资源。
 
 启动后打开 <http://127.0.0.1:3000>。
 
@@ -85,25 +95,32 @@ npm run build
 
 构建结果包含首页、每篇文档的独立 `.html` 页面、文档 JSON、离线搜索索引、图片/音视频/附件、KaTeX 与 Mermaid 资源，以及 `robots.txt` 和 `sitemap.xml`。将整个 `dist/` 目录部署到静态托管平台即可，不需要 Node.js 服务端。
 
+构建还会生成可见文档的 Markdown 正文、`llms.txt` 和 `llms-full.txt`。隐藏文档不会进入这些产物；Markdown 导出不包含 front matter。
+
+输出目录必须为空或包含 DocsKit 生成的 `.docskit-build.json` 标记。为保护已有文件，构建不会覆盖其他非空目录；升级较旧版本生成的静态站时，请指定一个新输出目录，验证成功后再切换托管配置。构建先完成全部产物，再备份并切换旧目录；切换失败会尝试恢复上一版。直接构建到线上目录仍可能出现短暂切换间隙，生产部署建议发布到独立版本目录，由托管平台切换版本。
+
+`_headers` 提供安全响应头配置，是否生效取决于托管平台。使用 Nginx、对象存储或其他静态托管时，应配置对应响应头并检查 SVG 的内容安全策略；不能仅依靠复制该文件。
+
 常用构建参数如下：
 
 ```bash
 npm run build -- --docs ./my-docs --out ./dist --base /docs/ --site-url https://mymyjd.com
 ```
 
-`--docs` 指定 Markdown 目录，`--config` 指定配置文件，`--out` 指定输出目录，`--base` 指定站点部署基路径，`--site-url` 指定用于 SEO、robots 和 sitemap 的站点根地址。`--base` 需要以 `/` 开头，例如部署在域名根目录使用 `/`，部署在 `https://mymyjd.com/docs/` 使用 `/docs/`。不提供 `--site-url` 时仍会生成 sitemap，但不会在 robots 文件中写入不准确的绝对站点地址。
+`--docs` 指定 Markdown 目录，`--config` 指定配置文件，`--out` 指定输出目录，`--base` 指定站点部署基路径，`--site-url` 指定用于 SEO、robots 和 sitemap 的站点根地址。`--base` 需要以 `/` 开头，例如部署在域名根目录使用 `/`，部署在 `https://mymyjd.com/docs/` 使用 `/docs/`。配置中的 `site.url` 会提供默认域名与部署路径，命令行参数和对应环境变量可以覆盖它；没有可信站点地址时使用相对页面地址，不在 robots 中推断公网地址。
 
 ## 配置
 
 站点配置文件是 [docs/docs.config.json](docs/docs.config.json)。配置文件会按文件变更缓存，修改后刷新页面即可生效。
 
-配置文件不是必需的。文件不存在、JSON 无效或只提供部分字段时，服务会使用默认配置继续运行：顶部自定义导航为空，未指定图标的文件和目录会按路径稳定选择内置图标。
+配置文件不是必需的。首次缺少配置或只提供部分字段时，服务使用默认值补齐；首次读到损坏配置会明确报错。已有有效配置时，错误更新不会覆盖正在使用的配置，页面会提示修复后重试。顶部自定义导航默认为空，未指定图标的文件和目录会按路径稳定选择内置图标。
 
 ### 站点和顶部导航
 
 ```json
 {
   "site": {
+    "url": "",
     "brand": { "name": "docs", "accent": "kit" },
     "context": "知识库",
     "title": "我的文档",
@@ -224,6 +241,7 @@ icon: book-open
 | `order` | number | 同一层级中的排序值，数值越小越靠前 |
 | `icon` | string | 文档默认图标，配置文件中的路径图标优先级更高 |
 | `hidden` | boolean | 设置为 `true` 时不加入导航和搜索索引 |
+| `openapi` | string | 绑定文档目录内的 OpenAPI JSON/YAML；相对当前 Markdown 解析，以 `/` 开头时相对文档根目录 |
 
 Markdown 中的相对链接会在站点内切换文档：
 
@@ -258,6 +276,9 @@ Markdown 中的相对链接会在站点内切换文档：
 | `GET /api/bootstrap` | 返回站点配置、导航树和默认文档 |
 | `GET /api/document?path=...` | 返回指定 Markdown 文档的渲染结果 |
 | `GET /api/search?q=...` | 搜索标题、路径和正文全文 |
+| `GET /api/markdown?path=...` | 导出公开文档的 Markdown 正文 |
+| `GET /llms.txt` | 提供公开文档的 Markdown 入口索引 |
+| `GET /llms-full.txt` | 提供公开文档的合并 Markdown 正文 |
 | `GET /api/asset?path=...` | 读取文档目录中的图片等静态资源 |
 | `GET /api/download?path=...` | 以附件方式下载文档目录中的公开文件 |
 
@@ -271,7 +292,7 @@ npm run dev
 
 开发服务不需要前端打包步骤。修改 `index.html`、`script.js` 或 `styles.css` 后刷新浏览器即可；修改 `docs/` 下的 Markdown 文档、目录结构或 `docs/docs.config.json` 后也只需刷新页面。发布静态站点时重新运行 `npm run build`，服务不会自动刷新页面，也不提供代码热重载。
 
-服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求会共享同一次重建，不会重复读取全部 Markdown 文件。Bootstrap 和重复搜索结果也会按索引版本缓存；目录数量过多时自动使用轮询检查，避免创建过多文件监听器。
+服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求共享同一次重建。更新失败时保留上一份有效索引，并在退避后重试；首次构建失败则明确返回错误。可通过 `limits.indexBytes` 和 `limits.renderCacheBytes` 配置索引与渲染缓存的字节预算。Bootstrap 和重复搜索结果也会按索引版本缓存；目录数量过多时自动使用轮询检查，避免创建过多文件监听器。
 
 ## Docker 部署
 

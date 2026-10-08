@@ -7,13 +7,13 @@ icon: settings
 
 # 配置文件
 
-默认配置文件是文档目录下的 `docs.config.json`。本项目使用 `docs/docs.config.json`。配置文件可以只写需要覆盖的字段；文件不存在、JSON 无效或字段缺失时，DocsKit 会使用默认值补齐配置。
+默认配置文件是文档目录下的 `docs.config.json`。本项目使用 `docs/docs.config.json`。配置文件可以只写需要覆盖的字段；文件不存在或字段缺失时使用默认值。损坏的 JSON 或无效配置不会静默重置站点：动态服务保留上一份可用配置并报告错误，首次加载没有可用配置时返回错误；静态构建会失败。
 
 `--config` 的优先级高于 `DOCS_CONFIG`，两者都没有设置时，配置文件位于实际文档目录下。文档目录的优先级从高到低为 `--docs`、`DOCS_DIR`、配置中的 `docsDir` 和默认值 `docs`。`docsDir` 使用相对于项目根目录的路径。
 
 ## 配置总览
 
-配置文件包含四个顶层节点：
+主要配置节点如下：
 
 | 节点 | 说明 |
 | --- | --- |
@@ -21,10 +21,16 @@ icon: settings
 | `topbar` | 顶部导航栏 |
 | `markdown` | Markdown 渲染选项 |
 | `sidebar` | 侧边栏排序、图标和展开方式 |
+| `home` | 首页文档的相对路径 |
+| `limits` | 索引与渲染缓存的字节预算 |
 
 ### 文档目录限制
 
 文档路径上方最多允许 5 个目录层级，例如 `a/b/c/d/e/doc.md` 可以使用；超过第 5 个目录层级的 Markdown 文件会被拒绝。服务和静态构建最多加载 1000 篇 Markdown 文档，隐藏文档和超大 Markdown 文件也会计入扫描限制。超过任一限制时，服务接口会返回明确错误，静态构建会终止，不会生成不完整的导航树。
+
+`home` 可以设置为 `getting-started/installation.md` 等可见文档路径；不存在或隐藏的目标会报错。未设置时优先选择根目录的 `index.md` 或 `README.md`，然后使用导航排序中的第一篇。
+
+`limits.indexBytes` 默认为 `67108864`（64 MiB），限制索引输入内容和 OpenAPI 引用文件的累计大小；`limits.renderCacheBytes` 默认为 `33554432`（32 MiB），限制渲染结果缓存。两项都必须是正整数。索引热更新失败时保留旧索引并退避重试，页面会显示更新失败提示，已有内容仍可阅读。
 
 完整配置示例：
 
@@ -102,6 +108,7 @@ icon: settings
 | `site.context` | string | `"文档"` | 品牌文字右侧的上下文标签 |
 | `site.eyebrow` | string | `"DOCUMENTATION"` | 侧边栏顶部的小字标签 |
 | `site.title` | string | `"我的文档"` | 侧边栏标题 |
+| `site.url` | string | `""` | 公网 HTTP(S) 站点根地址，可含部署路径；不允许凭据、查询或锚点。用于逐页 canonical、sitemap 和导出链接 |
 | `site.description` | string | `"按目录组织的 Markdown 知识库"` | 站点默认描述，用于 SEO 和首页 |
 | `site.themeColor` | string | `""` | 站点主题色（十六进制，如 `#3370ff`、`#ff6b6b`）。配置后自动派生出 `accent-dark`、`accent-soft`、`accent-pale` 等色阶，应用到导航、按钮、链接、代码块等所有界面元素。留空时沿用默认蓝色 `#3370ff` |
 
@@ -126,7 +133,7 @@ icon: settings
 | `site.seo.robots` | string | `""` | 搜索引擎指令，如 `index,follow` |
 | `site.seo.image` | string / object | `""` | Open Graph 分享图片 |
 | `site.seo.ogImage` | string / object | `""` | `image` 的兼容别名 |
-| `site.seo.canonical` | string | `""` | 规范链接 |
+| `site.seo.canonical` | string | `""` | 旧版固定规范链接；新站点应设置 `site.url`，按文档生成独立地址 |
 | `site.seo.themeColor` | string | `""` | 浏览器主题色（与 `site.themeColor` 不同，这是 `<meta name="theme-color">`） |
 
 ### 页脚

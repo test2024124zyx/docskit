@@ -17,7 +17,9 @@ DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。它会递�
 - 支持 front matter 配置标题、摘要、排序和图标。
 - 支持在普通 Markdown 文本中使用 `:icon[name]` 展示内置图标。
 - 侧边栏图标、顶部导航、品牌信息和主题开关均可配置。
-- 服务端全文搜索标题、路径和 Markdown 正文。
+- 动态服务和静态站使用相同的搜索规则，覆盖标题、路径、章节正文和代码，搜索结果可直达命中章节。
+- 支持多语言代码组、语言偏好记忆、Markdown 复制与下载，以及公开文档的 `llms.txt` 索引。
+- 支持 OpenAPI 3.0/3.1、API 参考、代码示例和在线请求调试，详见 [OpenAPI 指南](guides/openapi.md)。
 - 首页和文档页支持服务端初始渲染，站点 SEO 可被搜索引擎直接读取。
 - 文档索引按需构建并缓存在内存中，文件变化后下一次请求自动失效重建。
 - 支持浅色/深色主题和移动端导航抽屉。
@@ -32,12 +34,16 @@ DocsKit 是一个由 Markdown 文件夹驱动的轻量文档站点。它会递�
 ### 启动服务
 
 ```bash
+git clone https://github.com/test2024124zyx/docskit.git
+cd docskit
+npm ci
 npm run dev
 ```
 
 提交或部署前可以运行构建校验和完整测试：
 
 ```bash
+npm run check
 npm run build
 npm test
 ```
@@ -91,13 +97,17 @@ npm run build
 
 构建结果包含首页、每篇文档的独立 `.html` 页面、文档 JSON、离线搜索索引、图片/音视频/附件、KaTeX 与 Mermaid 资源，以及 `robots.txt` 和 `sitemap.xml`。将整个 `dist/` 目录部署到静态托管平台即可，不需要 Node.js 服务端。
 
+构建同时输出公开文档的 Markdown 正文、`llms.txt` 和 `llms-full.txt`，并携带 API 页面需要的本地资源。输出目录必须为空或包含 DocsKit 的 `.docskit-build.json` 标记；非空的其他目录不会被覆盖。切换失败时会尝试恢复上一版，生产环境建议发布到独立版本目录后再切换托管版本。
+
 常用构建参数如下：
 
 ```bash
 npm run build -- --docs ./my-docs --out ./dist --base /docs/ --site-url https://mymyjd.com
 ```
 
-`--docs` 指定 Markdown 目录，`--config` 指定配置文件，`--out` 指定输出目录，`--base` 指定站点部署基路径，`--site-url` 指定用于 SEO、robots 和 sitemap 的站点根地址。`--base` 需要以 `/` 开头，例如部署在域名根目录使用 `/`，部署在 `https://mymyjd.com/docs/` 使用 `/docs/`。不提供 `--site-url` 时仍会生成 sitemap，但不会在 robots 文件中写入不准确的绝对站点地址。
+`--docs` 指定 Markdown 目录，`--config` 指定配置文件，`--out` 指定输出目录，`--base` 指定站点部署基路径，`--site-url` 指定用于 SEO、robots 和 sitemap 的站点根地址。`--base` 需要以 `/` 开头，例如部署在域名根目录使用 `/`，部署在 `https://mymyjd.com/docs/` 使用 `/docs/`。配置 `site.url` 后会默认使用其中的域名和部署路径，命令行及环境变量可以覆盖；未配置站点地址时使用相对页面地址。
+
+静态产物中的 `_headers` 需要托管平台支持。Nginx 等部署方式应显式设置对应响应头，包括 API 调试所需的 `connect-src` 和 SVG 的安全策略。允许的 API 来源来自公开 OpenAPI 合同中的 `servers`；外部 API 同时需要允许本站的 CORS 请求。
 
 ## 配置
 
@@ -129,6 +139,7 @@ icon: book-open
 | `order` | number | 同一层级中的排序值，数值越小越靠前 |
 | `icon` | string | 文档默认图标，配置文件中的路径图标优先级更高 |
 | `hidden` | boolean | 设置为 `true` 时不加入导航和搜索索引 |
+| `openapi` | string | 绑定本地 OpenAPI JSON/YAML，相对当前 Markdown 或以 `/` 相对文档根目录 |
 
 Markdown 中的相对链接会在站点内切换文档：
 
@@ -163,6 +174,9 @@ Markdown 中的相对链接会在站点内切换文档：
 | `GET /api/bootstrap` | 返回站点配置、导航树和默认文档 |
 | `GET /api/document?path=...` | 返回指定 Markdown 文档的渲染结果 |
 | `GET /api/search?q=...` | 搜索标题、路径和正文全文 |
+| `GET /api/markdown?path=...` | 导出公开文档的 Markdown 正文 |
+| `GET /llms.txt` | 提供公开文档的 Markdown 入口索引 |
+| `GET /llms-full.txt` | 提供公开文档的合并 Markdown 正文 |
 | `GET /api/asset?path=...` | 读取文档目录中的图片等静态资源 |
 | `GET /api/download?path=...` | 以附件方式下载文档目录中的公开文件 |
 
@@ -176,7 +190,7 @@ npm run dev
 
 开发服务不需要前端打包步骤。修改 `index.html`、`script.js` 或 `styles.css` 后刷新浏览器即可；修改 `docs/` 下的 Markdown 文档、目录结构或 `docs/docs.config.json` 后也只需刷新页面。发布静态站点时重新运行 `npm run build`，服务不会自动刷新页面，也不提供代码热重载。
 
-服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求会共享同一次重建，不会重复读取全部 Markdown 文件。
+服务首次访问文档接口时建立索引，后续请求复用内存中的索引。服务会监听文档目录的文件变化，将索引标记为过期，并在下一次接口请求时只重建一次；并发请求共享同一次重建。已有配置或索引的错误更新会保留上一份有效内容并提示重试；首次构建失败会明确报错。
 
 
 ## 部署

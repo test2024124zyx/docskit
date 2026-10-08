@@ -22,11 +22,20 @@ const {
   renderPage,
   renderRobots,
   renderSitemap,
-  normalizeRelative
+  normalizeRelative,
+  preferredDocument
 } = require("./server");
 const { writeSkillArchive } = require("./skill-archive");
+const { buildBundle } = require("./build-highlight");
+const { checkContent, assertContentValid } = require("./content-check");
+const { apiConnectSources } = require("./server-api-policy");
+const { exportMarkdown, renderLlms } = require("./server-exports");
 
 const PROJECT_TEMPLATE_PATH = path.join(ROOT_DIR, "index.html");
+const BUILD_MARKER_NAME = ".docskit-build.json";
+const BUILD_MARKER = { generator: "docskit", format: 1 };
+const CLIENT_FILES = ["script.js", "styles.css", "search-core.js", "client-search.js", "client-navigation.js", "client-api.js"];
+const REVALIDATED_RESOURCES = [...CLIENT_FILES, "vendor/scalar.js", "vendor/mermaid.min.js", "vendor/highlight.min.js", "vendor/katex/katex.min.css"];
 const STATIC_HEADERS = [
   "/*",
   "  X-Content-Type-Options: nosniff",
@@ -38,6 +47,13 @@ const STATIC_HEADERS = [
   "  Content-Security-Policy: default-src 'none'; base-uri 'none'; frame-ancestors 'none'; script-src 'none'; object-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src data:; sandbox",
   ""
 ].join("\n");
+
+function staticHeaders(documents, base) {
+  const policy = assets.contentSecurityPolicy(apiConnectSources(documents));
+  const securityHeaders = STATIC_HEADERS.replace("/*\n", `/*\n  Content-Security-Policy: ${policy}\n`).replace("/assets/*.svg", `${base}assets/*.svg`);
+  // 固定资源名在发布后需要重新校验，避免旧脚本与新 HTML 合同混用。
+  return `${securityHeaders}\n${REVALIDATED_RESOURCES.map((resource) => `${publicPath(base, resource)}\n  Cache-Control: no-cache, must-revalidate\n`).join("\n")}`;
+}
 
 function optionValue(value, fallback) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -167,12 +183,6 @@ async function loadBuildContext(options = {}) {
   };
 }
 
-function preferredDocument(documents) {
-  return documents.find((document) => /(^|\/)index\.(md|markdown)$/i.test(document.path))
-    || documents.find((document) => /(^|\/)readme\.(md|markdown)$/i.test(document.path))
-    || documents[0];
-}
-
 function sitePageUrl(siteUrl, pagePath) {
   return siteUrl ? `${siteUrl}${pagePath}` : pagePath;
 }
@@ -181,7 +191,7 @@ function rewriteTemplate(template, base) {
   return template
     .replace(/href="styles\.css"/i, `href="${publicPath(base, "styles.css")}"`)
     .replace(/href="\/vendor\/katex\/katex\.min\.css"/i, `href="${publicPath(base, "vendor/katex/katex.min.css")}"`)
-    .replace(/src="script\.js"/i, `src="${publicPath(base, "script.js")}"`)
+    .replace(/src="((?:script|search-core|client-search|client-navigation|client-api)\.js)"/gi, (_, name) => `src="${publicPath(base, name)}"`)
     .replace(/(<a\s+class="brand"\s+href=")[^"]*"/i, `$1${publicPath(base, "")}"`);
 }
 
@@ -191,14 +201,15 @@ async function writeText(filePath, content) {
 }
 
 async function copyProjectRuntime(outputDir) {
-  await fsp.copyFile(path.join(ROOT_DIR, "script.js"), path.join(outputDir, "script.js"));
-  await fsp.copyFile(path.join(ROOT_DIR, "styles.css"), path.join(outputDir, "styles.css"));
+  for (const fileName of CLIENT_FILES) {
+    await fsp.copyFile(path.join(ROOT_DIR, fileName), path.join(outputDir, fileName));
+  }
   const mermaidSource = path.join(ROOT_DIR, "node_modules", "mermaid", "dist", "mermaid.min.js");
   const katexSource = path.join(ROOT_DIR, "node_modules", "katex", "dist");
   await fsp.mkdir(path.join(outputDir, "vendor"), { recursive: true });
-  const hljsSource = path.join(ROOT_DIR, "dist", "vendor", "highlight.min.js");
   await fsp.copyFile(mermaidSource, path.join(outputDir, "vendor", "mermaid.min.js"));
-  await fsp.copyFile(hljsSource, path.join(outputDir, "vendor", "highlight.min.js"));
+  await fsp.copyFile(path.join(ROOT_DIR, "node_modules", "@scalar", "api-reference", "dist", "browser", "standalone.js"), path.join(outputDir, "vendor", "scalar.js"));
+  buildBundle({ outputPath: path.join(outputDir, "vendor", "highlight.min.js") });
   await fsp.cp(katexSource, path.join(outputDir, "vendor", "katex"), { recursive: true });
 }
 
@@ -232,6 +243,9 @@ async function copyPublicAssets(docsDir, outputDir) {
         continue;
       }
       if (!entry.isFile() || !assets.isPublicAssetPath(relativePath)) continue;
+      const stat = await fsp.lstat(sourcePath);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      if (stat.size > assets.assetMaxBytes(relativePath)) throw new Error(`资源过大：${relativePath}`);
       const targetPath = path.join(outputDir, "assets", ...relativePath.split("/"));
       await fsp.mkdir(path.dirname(targetPath), { recursive: true });
       await fsp.copyFile(sourcePath, targetPath);
@@ -261,7 +275,8 @@ function searchIndexDocument(document, config, base) {
   return {
     ...documentSummary(document, config, base),
     plainBody: document.plainBody,
-    searchText: document.searchText
+    searchText: document.searchText,
+    sections: document.sections
   };
 }
 
@@ -273,29 +288,113 @@ function assertSafeOutput(outputDir, docsDir) {
 }
 
 async function assertOutputIsNotSymlink(outputDir) {
-  try {
-    const stat = await fsp.lstat(outputDir);
-    if (stat.isSymbolicLink()) throw new Error("静态输出目录不能是符号链接");
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+  // 检查全部父目录，避免通过目录联接把产物写到未经核验的位置。
+  let current = path.resolve(outputDir);
+  while (true) {
+    try {
+      const stat = await fsp.lstat(current);
+      if (stat.isSymbolicLink()) throw new Error("静态输出目录及其父目录不能是符号链接");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
+}
+
+async function assertManagedOutput(outputDir) {
+  let entries;
+  try {
+    entries = await fsp.readdir(outputDir);
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+  if (entries.length === 0) return true;
+  try {
+    const marker = JSON.parse(await fsp.readFile(path.join(outputDir, BUILD_MARKER_NAME), "utf8"));
+    if (marker.generator === BUILD_MARKER.generator && marker.format === BUILD_MARKER.format) return true;
+  } catch (error) {
+    if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+  }
+  // 兼容首次启动留下的唯一高亮缓存，不接受混有其他文件的目录。
+  if (path.resolve(outputDir) === path.join(ROOT_DIR, "dist") && entries.length === 1 && entries[0] === "vendor") {
+    const vendorFiles = await fsp.readdir(path.join(outputDir, "vendor"));
+    if (vendorFiles.length === 1 && vendorFiles[0] === "highlight.min.js") return true;
+  }
+  throw new Error(`输出目录不是 DocsKit 已登记的构建产物，拒绝覆盖：${outputDir}。请改用新的空目录。`);
+}
+
+async function removeTemporaryBuild(directory, parent) {
+  const resolved = path.resolve(directory);
+  if (path.dirname(resolved) !== path.resolve(parent) || !path.basename(resolved).startsWith(".docskit-")) {
+    throw new Error("拒绝清理超出构建范围的目录");
+  }
+  await fsp.rm(resolved, { recursive: true, force: true });
+}
+
+async function replaceOutput(stagedDir, outputDir) {
+  const parent = path.dirname(outputDir);
+  await assertOutputIsNotSymlink(outputDir);
+  const hasPrevious = await assertManagedOutput(outputDir);
+  let backupRoot;
+  if (hasPrevious) {
+    backupRoot = await fsp.mkdtemp(path.join(parent, ".docskit-backup-"));
+    try {
+      await fsp.rename(outputDir, path.join(backupRoot, "previous"));
+    } catch (error) {
+      await removeTemporaryBuild(backupRoot, parent);
+      throw error;
+    }
+  }
+  try {
+    await fsp.rename(stagedDir, outputDir);
+  } catch (error) {
+    if (backupRoot) {
+      try {
+        await fsp.rename(path.join(backupRoot, "previous"), outputDir);
+        await removeTemporaryBuild(backupRoot, parent);
+      } catch (restoreError) {
+        throw new Error(`产物切换失败且自动恢复失败，上一版保留在 ${backupRoot}：${restoreError.message}`, { cause: error });
+      }
+    }
+    throw error;
+  }
+  if (backupRoot) {
+    try { await removeTemporaryBuild(backupRoot, parent); }
+    catch (error) { console.warn(`新产物已发布，旧产物清理失败，保留在 ${backupRoot}：${error.message}`); }
+  }
+}
+
+function llmsDocument(config, documents, markdownUrls, documentUrls, siteUrl, full = false) {
+  return renderLlms(documents, config, {
+    full,
+    markdownUrl: (document) => sitePageUrl(siteUrl, markdownUrls[document.path]),
+    documentUrl: (document) => sitePageUrl(siteUrl, documentUrls[document.path])
+  });
 }
 
 async function buildStaticSite(options = {}) {
   const { config, configPath, docsDir } = await loadBuildContext(options);
   const outputDir = path.resolve(resolveFromRoot(optionValue(options.outDir, optionValue(process.env.DOCS_OUT, path.join(ROOT_DIR, "dist")))));
-  const base = normalizeBase(optionValue(options.base, optionValue(process.env.DOCS_BASE, "/")));
-  const siteUrl = normalizeSiteUrl(optionValue(options.siteUrl, optionValue(process.env.SITE_URL, "")));
+  const configuredUrl = config.site.url ? new URL(config.site.url) : null;
+  const base = normalizeBase(optionValue(options.base, optionValue(process.env.DOCS_BASE, configuredUrl?.pathname || "/")));
+  const siteUrl = normalizeSiteUrl(optionValue(options.siteUrl, optionValue(process.env.SITE_URL, configuredUrl?.origin || "")));
   assertSafeOutput(outputDir, docsDir);
   await assertOutputIsNotSymlink(outputDir);
 
   const template = await fsp.readFile(PROJECT_TEMPLATE_PATH, "utf8");
-  const scanned = await scanDocuments(docsDir);
+  const scanned = await scanDocuments(docsDir, { maxBytes: config.limits.indexBytes });
   const { documents, directoryMetadata } = scanned;
+  const headers = staticHeaders(documents, base);
   assertUniqueDocumentOutputs(documents);
+  assertContentValid(await checkContent({ docsDir, configPath, config, documents, directoryMetadata }));
+  await assertManagedOutput(outputDir);
   const tree = createTree(documents, config, directoryMetadata);
-  const preferred = preferredDocument(documents);
+  const preferred = preferredDocument(documents, config);
   const documentUrls = Object.fromEntries(documents.map((document) => [document.path, publicPath(base, documentOutputPath(document.path))]));
+  const markdownUrls = Object.fromEntries(documents.map((document) => [document.path, publicPath(base, `markdown/${document.path}`)]));
   const homePath = preferred ? preferred.path : "";
   const routeDocuments = {
     [publicPath(base, "")]: homePath,
@@ -307,9 +406,11 @@ async function buildStaticSite(options = {}) {
     asset: (assetPath) => publicPath(base, `assets/${assetPath}`)
   };
   const assetUrl = (assetPath) => publicPath(base, `assets/${assetPath}`);
-  const publicDocuments = new Map(documents.map((document) => [document.path, publicDocument(document, config, { links })]));
+  const publicDocuments = new Map(documents.map((document) => [document.path, {
+    ...publicDocument(document, config, { links }), markdownUrl: markdownUrls[document.path]
+  }]));
   const summaries = documents.map((document) => documentSummary(document, config, base));
-  const staticBuild = { base, documentUrls, routeDocuments };
+  const staticBuild = { base, documentUrls, routeDocuments, markdownUrls, llmsUrl: publicPath(base, "llms.txt"), llmsFullUrl: publicPath(base, "llms-full.txt") };
   const staticPageBuild = { base, bootstrapUrl: "bootstrap.json" };
   const staticBootstrap = { staticBuild, config: publicConfig(config), tree, documents: summaries, defaultPath: homePath };
   const makeStaticData = (currentDocument) => ({
@@ -321,6 +422,7 @@ async function buildStaticSite(options = {}) {
   const renderOptions = (currentDocument) => ({ links, assetUrl, staticData: makeStaticData(currentDocument) });
   const pageTemplate = rewriteTemplate(template, base);
   // 先在旁路目录完成全部文件，成功后再替换旧产物，避免部署目录出现半成品。
+  await fsp.mkdir(path.dirname(outputDir), { recursive: true });
   const stagedDir = await fsp.mkdtemp(path.join(path.dirname(outputDir), ".docskit-build-"));
 
   try {
@@ -330,6 +432,7 @@ async function buildStaticSite(options = {}) {
     await writeText(path.join(stagedDir, "bootstrap.json"), JSON.stringify(staticBootstrap));
     for (const document of documents) {
       const documentData = publicDocuments.get(document.path);
+      await writeText(path.join(stagedDir, "markdown", ...document.path.split("/")), exportMarkdown(document));
       await writeText(path.join(stagedDir, "data", "documents", `${document.path}.json`), JSON.stringify(documentData));
       const pagePath = documentOutputPath(document.path);
       await writeText(path.join(stagedDir, ...pagePath.split("/")), renderPage(pageTemplate, config, documentData, sitePageUrl(siteUrl, documentUrls[document.path]), renderOptions(documentData)));
@@ -342,12 +445,14 @@ async function buildStaticSite(options = {}) {
       homeUrl: sitePageUrl(siteUrl, publicPath(base, "")),
       documentUrl: (document) => sitePageUrl(siteUrl, documentUrls[document.path])
     }));
-    await writeText(path.join(stagedDir, "_headers"), STATIC_HEADERS);
-    await fsp.rm(outputDir, { recursive: true, force: true });
-    await fsp.rename(stagedDir, outputDir);
+    await writeText(path.join(stagedDir, "_headers"), headers);
+    await writeText(path.join(stagedDir, "llms.txt"), llmsDocument(config, documents, markdownUrls, documentUrls, siteUrl));
+    await writeText(path.join(stagedDir, "llms-full.txt"), llmsDocument(config, documents, markdownUrls, documentUrls, siteUrl, true));
+    await writeText(path.join(stagedDir, BUILD_MARKER_NAME), JSON.stringify(BUILD_MARKER));
+    await replaceOutput(stagedDir, outputDir);
     return { outputDir, docsDir, configPath, documents: documents.length, assets: copiedAssets + copiedRootFiles, base, siteUrl };
   } catch (error) {
-    await fsp.rm(stagedDir, { recursive: true, force: true });
+    await removeTemporaryBuild(stagedDir, path.dirname(outputDir));
     throw error;
   }
 }

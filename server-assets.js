@@ -61,6 +61,7 @@ const SVG_ASSET_CONTENT_SECURITY_POLICY = "default-src 'none'; base-uri 'none'; 
 function vendorResourcePath(pathname) {
   if (pathname === "/vendor/highlight.min.js") return "dist/vendor/highlight.min.js";
   if (pathname === "/vendor/mermaid.min.js") return "node_modules/mermaid/dist/mermaid.min.js";
+  if (pathname === "/vendor/scalar.js") return "node_modules/@scalar/api-reference/dist/browser/standalone.js";
   if (pathname.startsWith("/vendor/katex/")) {
     let relative;
     try { relative = decodeURIComponent(pathname.slice("/vendor/katex/".length)); } catch (error) { return ""; }
@@ -85,13 +86,17 @@ function isPublicAssetPath(relativePath) {
   return PUBLIC_ASSET_EXTENSIONS.has(path.posix.extname(normalized).toLowerCase());
 }
 
+function contentSecurityPolicy(connectSources = []) {
+  return `default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; script-src 'self'; connect-src 'self'${connectSources.length ? ` ${connectSources.join(" ")}` : ""}`;
+}
+
 function responseHeaders(headers = {}) {
   return {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Frame-Options": "SAMEORIGIN",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-    "Content-Security-Policy": "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; script-src 'self'; connect-src 'self'",
+    "Content-Security-Policy": contentSecurityPolicy(),
     ...headers
   };
 }
@@ -114,6 +119,15 @@ function contentDisposition(filename, disposition) {
   return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(safeName)}`;
 }
 
+function rangeValidatorMatches(value, etag, modifiedAt) {
+  if (!value) return true;
+  if (value.startsWith('"')) return value === etag;
+  if (value.startsWith("W/")) return false;
+  const timestamp = Date.parse(value);
+  // HTTP 日期精确到秒，与响应的 Last-Modified 保持一致。
+  return Number.isFinite(timestamp) && Math.floor(modifiedAt / 1000) <= Math.floor(timestamp / 1000);
+}
+
 async function sendFile(response, filePath, options = {}) {
   let stat;
   try {
@@ -127,7 +141,9 @@ async function sendFile(response, filePath, options = {}) {
   const type = MIME_TYPES[path.extname(filePath).toLowerCase()] || mediaMimeType(filePath) || "application/octet-stream";
   const isSvg = path.extname(filePath).toLowerCase() === ".svg";
   const etag = `"${stat.size.toString(16)}-${Math.trunc(stat.mtimeMs).toString(16)}"`;
-  const range = parseByteRange(options.request?.headers?.range, stat.size);
+  const requestHeaders = options.request?.headers || {};
+  const range = rangeValidatorMatches(requestHeaders["if-range"], etag, stat.mtimeMs)
+    ? parseByteRange(requestHeaders.range, stat.size) : null;
   const headers = responseHeaders({
     "Content-Type": type,
     "Cache-Control": options.cacheControl || "no-cache, must-revalidate",
@@ -186,8 +202,10 @@ module.exports = {
   vendorResourcePath,
   isPublicAssetPath,
   responseHeaders,
+  contentSecurityPolicy,
   contentDisposition,
   parseByteRange,
+  rangeValidatorMatches,
   sendFile,
   assetMaxBytes
 };

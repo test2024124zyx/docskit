@@ -1,6 +1,6 @@
 name: Publish Docker image
 
-# 仅推送标签时执行；普通分支提交和拉取请求不触发。
+# 标签发布复用与分支和拉取请求相同的校验，再推送镜像。
 on:
   push:
     tags:
@@ -14,32 +14,7 @@ env:
 
 jobs:
   test:
-    name: Test and validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      # 发布镜像前先在干净环境执行构建校验、单测和依赖安全检查。
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build validation
-        run: npm run build
-
-      - name: Run tests
-        run: npm test
-
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
+    uses: ./.github/workflows/validate.yml
 
   publish:
     name: Build and publish

@@ -18,20 +18,21 @@ description: 仅在用户明确要求编写、修改或审校适合 DocsKit/DocK
 1. **确认触发语境**：只有用户明确说出 DocsKit 或 DocKit，并提出适配该平台的文档目标时使用本 skill；没有明确平台目标时，不主动套用本 skill。
 2. **检查项目上下文**：先定位文档目录、`docs.config.json`、目标文档的同级文档和项目写作风格，确认文档路径、父目录和导航位置。
 3. **读取对应参考**：涉及 Markdown 语法时读取 [Markdown 参考](references/markdown.md)；涉及站点品牌、SEO、页脚、导航、排序、图标、缩进、展开方式或代码块显示时读取 [配置参考](references/configuration.md)。两者都涉及时都读取。
-4. **确定文档元数据**：优先使用文件名表达稳定路径，用 front matter 表达标题、摘要、排序、图标和隐藏状态。站点级配置、代码高亮和行号必须写入 `docs.config.json`，不要写进单篇文档 front matter。
+4. **确定文档元数据**：优先使用文件名表达稳定路径，用 front matter 表达标题、摘要、排序、图标、隐藏状态和本地 `openapi` 合同绑定。站点级配置、代码高亮和行号必须写入 `docs.config.json`，不要写进单篇文档 front matter。
 5. **编写正文**：使用一个清晰的一级标题，按主题使用二级及以下标题；为命令、配置和接口给出可复制的 fenced code block；对站内文档使用相对 Markdown 链接，对图片使用相对资源路径。
 6. **配置导航和站点**：只有在用户需要全局行为时修改 `docs.config.json`。导航顺序、图标优先级和站点元信息必须遵守 [配置参考](references/configuration.md) 中的规则。
-7. **按清单校对**：检查 front matter 分隔线、字段类型、相对路径、标题层级、表格分隔线、代码围栏闭合和 JSON 格式；确认示例、链接和图片路径与文档内容一致。
+7. **按清单校对**：检查 front matter 分隔线、字段类型、相对路径、标题层级、表格分隔线、代码围栏闭合和 JSON 格式；在项目根目录运行 `npm run check` 校验配置、文档链接、锚点、本地资源和 OpenAPI 合同。该检查不访问外部链接。
 
 ## 强制约束
 
 - 只将 `.md` 或 `.markdown` 文件作为 DocsKit 文档；不要把 `docs.config.json` 写成 Markdown。
 - 文档路径最多包含 5 个目录层级，站点最多加载 1000 篇 Markdown 文档；规划或交付文档集合时必须检查这两项限制。隐藏文档和超大 Markdown 文件也计入文档数量上限。
-- front matter 必须位于文件第一行，使用两个 `---` 包围；只使用 `title`、`description`、`order`、`icon`、`hidden` 五个受支持字段。
+- front matter 必须位于文件第一行，使用两个 `---` 包围；使用 `title`、`description`、`order`、`icon`、`hidden`、`openapi` 六个受支持字段。`openapi` 是文档目录内的 JSON/YAML 合同路径，写法见 Markdown 参考。
 - 需要站内跳转时使用 `[文字](../path/to/page.md)`；需要显示图片时使用 `![替代文字](../assets/image.png)`。不要把本地资源写成站内文档链接。
 - 需要在正文展示内置图标时使用 `:icon[图标名称]`，名称必须来自配置参考中的 102 个内置图标；不要在代码块中期待它被替换。
 - 代码必须放在三个或更多反引号或波浪号围栏中，并填写有意义的语言标识；常见语言会自动高亮，行号、复制按钮和长行换行由 `markdown.code` 配置控制；不要手写行号、`hljs-*` 类名或 HTML。
 - 普通代码块中的 `code`、`plain`、`text` 和 `txt` 用于纯文本显示；`math`、`latex`、`tex` 和 `mermaid` 是特殊围栏，不按普通代码块的高亮、行号规则编写。
+- 同一操作的多语言示例可使用 `::: code-group` 容器和围栏后的 `[标签]`；不要用手写 HTML 标签页替代它。
 - 生成表格时必须提供包含至少三个连字符的分隔行；生成任务列表时使用 `- [ ]` 或 `- [x]`。
 - 不生成原生 HTML、定义列表、PlantUML 特殊图表、复杂块级嵌套、未验证的插件语法或其他参考文件未列出的扩展语法。
 - 修改现有文档时保留用户已有内容、链接和元数据；只有用户明确要求时才调整导航排序、站点配置或文件路径。
@@ -76,4 +77,5 @@ icon: book-open
 - 普通代码块语言标识、表格列数、列表类型和 callout 标记均符合实际解析规则；数学公式和 Mermaid 内容使用各自的特殊围栏。
 - 没有把 Markdown 原文放入 front matter，也没有把 JSON 注释或尾逗号写入 `docs.config.json`。
 - 需要全局配置的字段已经写入正确的顶级对象；没有用单篇文档的 `icon` 代替全局图标策略。
-- `hidden: true` 只用于不应出现在导航和站内搜索中的文档，并确认这不是用户想公开的页面。
+- `hidden: true` 的文档不进入导航、搜索、Markdown 导出及 `llms.txt`/`llms-full.txt`；可见文档的正文和绑定的 OpenAPI 合同会被公开导出，front matter 与内部文件元数据不包含在内。
+- `npm run check` 没有错误，未知字段警告已核对；首页和字节预算按配置参考中的 `home`、`limits` 设置，公网规范地址使用 `site.url`。
