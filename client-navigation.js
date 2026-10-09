@@ -6,9 +6,15 @@
   const $ = (selector) => document.querySelector(selector);
   const sidebar = $("#sidebar");
   const overlay = $(".mobile-overlay");
+  const mobileToc = $(".mobile-toc");
   const MOBILE_WIDTH = 680;
+  const COMPACT_TOPBAR_WIDTH = 1100;
   const DEFAULT_NAV_INDENT = 12;
+  const COPY_FEEDBACK_MS = 1800;
+  const TOC_SCROLL_IDLE_MS = 160;
+  const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
   let sidebarPreviousFocus = null;
+  let tocScrollTimer;
 
   function config() { return state.config?.sidebar || {}; }
   function applyNavDepth(element, depth) {
@@ -163,26 +169,54 @@
       else link.removeAttribute("aria-current");
     });
   }
+  function releaseTocScroll(requestId = state.tocScrollRequestId) {
+    if (requestId !== state.tocScrollRequestId) return;
+    window.clearTimeout(tocScrollTimer);
+    state.tocScrollTarget = "";
+  }
+  function interruptTocScroll() {
+    if (!state.tocScrollTarget) return;
+    state.tocScrollRequestId += 1;
+    releaseTocScroll();
+  }
+  function scheduleTocScrollRelease() {
+    if (!state.tocScrollTarget) return;
+    window.clearTimeout(tocScrollTimer);
+    const requestId = state.tocScrollRequestId;
+    // 页尾可能无法把目标送入观察区域，滚动稳定后必须恢复普通目录追踪。
+    tocScrollTimer = window.setTimeout(() => releaseTocScroll(requestId), TOC_SCROLL_IDLE_MS);
+  }
   function navigateToHeading(id, href) {
     const target = document.getElementById(id);
     if (!target) return;
     state.tocScrollTarget = id;
     const requestId = ++state.tocScrollRequestId;
+    window.clearTimeout(tocScrollTimer);
     setActiveToc(id);
     saveReadingPosition();
     window.history.pushState({}, "", href || `#${encodeURIComponent(id)}`);
-    const mobileToc = $(".mobile-toc");
+    // 先将焦点移到正文，避免关闭目录后仍停留在不可见的链接中。
+    if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+    target.focus({ preventScroll: true });
     if (mobileToc) mobileToc.open = false;
     window.requestAnimationFrame(() => {
-      if (requestId === state.tocScrollRequestId) target.scrollIntoView({ behavior: motionBehavior(), block: "start" });
+      if (requestId !== state.tocScrollRequestId || state.tocScrollTarget !== id) return;
+      target.scrollIntoView({ behavior: motionBehavior(), block: "start" });
+      scheduleTocScrollRelease();
     });
   }
   function renderToc(headings) {
-    state.tocScrollTarget = "";
+    releaseTocScroll();
     state.tocScrollRequestId += 1;
     const visible = (headings || []).filter((heading) => heading.level >= 2 && heading.level <= 4);
-    const mobile = $(".mobile-toc");
-    if (mobile) { mobile.hidden = !visible.length; mobile.open = false; }
+    if (mobileToc) {
+      // 保留同一个目录节点；切换文档清理正文后再接到新首屏下方。
+      const header = $("#doc-content .doc-header");
+      if (header) header.after(mobileToc);
+      else $("#doc-content").before(mobileToc);
+      mobileToc.hidden = !visible.length;
+      mobileToc.open = false;
+    }
     for (const list of [$("#toc-list"), $("#mobile-toc-list")].filter(Boolean)) {
       list.replaceChildren();
       if (!visible.length) list.innerHTML = '<span class="toc-empty">当前页面没有小节</span>';
@@ -209,7 +243,7 @@
     if (!headings.length || typeof window.IntersectionObserver !== "function") return;
     state.headingObserver = new window.IntersectionObserver((entries) => {
       const requested = entries.find((entry) => entry.isIntersecting && entry.target.id === state.tocScrollTarget);
-      if (requested) { state.tocScrollTarget = ""; setActiveToc(requested.target.id); return; }
+      if (requested) { releaseTocScroll(); setActiveToc(requested.target.id); return; }
       if (state.tocScrollTarget) return;
       const current = entries.filter((entry) => entry.isIntersecting).sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
       if (current) setActiveToc(current.target.id);
@@ -256,6 +290,7 @@
   function toggleSidebar(force, restoreFocus = true) {
     const trigger = $('[data-action="toggle-sidebar"]');
     const open = typeof force === "boolean" ? force : !sidebar.classList.contains("is-open");
+    if (open) closeMenus();
     if (open && !sidebar.classList.contains("is-open")) sidebarPreviousFocus = document.activeElement;
     sidebar.classList.toggle("is-open", open);
     overlay.classList.toggle("is-open", open);
@@ -280,22 +315,32 @@
   }
   function closeMenus() {
     const menu = $("#mobile-topbar-links");
+    const focusedLink = menu?.contains(document.activeElement) ? document.activeElement.closest("a") : null;
     if (menu) menu.hidden = true;
-    $('[data-action="toggle-topbar-menu"]')?.setAttribute("aria-expanded", "false");
+    const trigger = $('[data-action="toggle-topbar-menu"]');
+    trigger?.setAttribute("aria-expanded", "false");
+    if (focusedLink) {
+      // 横向扩大后更多按钮已隐藏，焦点接续到对应的桌面链接。
+      const desktopLink = Array.from(document.querySelectorAll(".topbar-link")).find((link) => link.href === focusedLink.href);
+      const destination = window.innerWidth > COMPACT_TOPBAR_WIDTH ? desktopLink || $(".brand") : trigger;
+      destination?.focus({ preventScroll: true });
+    }
   }
   function toggleTopbarMenu() {
     const menu = $("#mobile-topbar-links");
     const trigger = $('[data-action="toggle-topbar-menu"]');
     if (!menu || !trigger) return;
-    menu.hidden = !menu.hidden;
-    trigger.setAttribute("aria-expanded", String(!menu.hidden));
-    if (!menu.hidden) menu.querySelector("a")?.focus();
+    if (!menu.hidden) { closeMenus(); return; }
+    toggleSidebar(false, false);
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    menu.querySelector("a")?.focus();
   }
   function handleKeydown(event) {
+    if (!event.defaultPrevented && SCROLL_KEYS.has(event.key) && !event.target.closest?.("input, textarea, select, button, [contenteditable]:not([contenteditable='false'])")) interruptTocScroll();
     if (event.key === "Escape") {
       if ($( "#mobile-topbar-links") && !$("#mobile-topbar-links").hidden) {
         closeMenus();
-        $('[data-action="toggle-topbar-menu"]')?.focus();
       }
       toggleSidebar(false);
     }
@@ -304,6 +349,40 @@
     const index = focusable.indexOf(document.activeElement);
     event.preventDefault();
     focusable[(index + (event.shiftKey ? -1 : 1) + focusable.length) % focusable.length]?.focus();
+  }
+  function bindCopyFeedback(button, value, successMessage, errorMessage, iconOnly = false) {
+    const original = { html: button.innerHTML, label: button.getAttribute("aria-label"), title: button.title };
+    let copying = false;
+    let resetTimer;
+    const update = (phase, label, icon) => {
+      button.dataset.copyState = phase;
+      if (iconOnly) {
+        button.innerHTML = iconSvg(icon, "heading-copy__icon");
+        button.setAttribute("aria-label", `${original.label}：${label}`);
+      } else button.textContent = label;
+      button.title = label;
+    };
+    button.addEventListener("click", async () => {
+      if (copying) return;
+      copying = true;
+      window.clearTimeout(resetTimer);
+      button.setAttribute("aria-busy", "true");
+      update("pending", "正在复制…", "clock");
+      let success = false;
+      try { await copyTextToClipboard(value()); success = true; }
+      catch { /* 错误同时呈现在操作按钮及站点消息区域，方便就地重试。 */ }
+      finally { copying = false; button.removeAttribute("aria-busy"); }
+      // 已离开的文档不再显示过期复制反馈。
+      if (!button.isConnected) return;
+      update(success ? "success" : "error", success ? "已复制" : "复制失败", success ? "check" : "x-circle");
+      showToast(success ? successMessage : errorMessage, success ? undefined : "error");
+      resetTimer = window.setTimeout(() => {
+        button.innerHTML = original.html;
+        button.title = original.title;
+        if (original.label !== null) button.setAttribute("aria-label", original.label);
+        button.removeAttribute("data-copy-state");
+      }, COPY_FEEDBACK_MS);
+    });
   }
   function renderReadingTools(data) {
     const article = $("#doc-content");
@@ -315,7 +394,7 @@
       copy.type = "button";
       copy.dataset.action = "copy-markdown";
       copy.textContent = "复制 Markdown";
-      copy.addEventListener("click", () => copyTextToClipboard(data.markdown).then(() => showToast("Markdown 已复制")).catch(() => showToast("复制失败，请下载 Markdown", "error")));
+      bindCopyFeedback(copy, () => data.markdown, "Markdown 已复制", "复制失败，请下载 Markdown");
       toolbar.appendChild(copy);
     }
     if (data.markdownUrl) {
@@ -354,7 +433,7 @@
       pagination.appendChild(link);
     }
     if (pagination.children.length) article.appendChild(pagination);
-    article.querySelectorAll(".markdown-body h1[id], .markdown-body h2[id], .markdown-body h3[id], .markdown-body h4[id]").forEach((heading) => {
+    article.querySelectorAll(".doc-header h1[id], .markdown-body h1[id], .markdown-body h2[id], .markdown-body h3[id], .markdown-body h4[id]").forEach((heading) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "heading-copy";
@@ -362,7 +441,7 @@
       button.setAttribute("aria-label", `复制“${heading.textContent}”章节链接`);
       button.title = "复制章节链接";
       button.innerHTML = iconSvg("link", "heading-copy__icon");
-      button.addEventListener("click", () => copyTextToClipboard(new URL(docUrl(data.path, encodeURIComponent(heading.id)), window.location.href).href).then(() => showToast("章节链接已复制")).catch(() => showToast("复制失败，请复制地址栏链接", "error")));
+      bindCopyFeedback(button, () => new URL(docUrl(data.path, encodeURIComponent(heading.id)), window.location.href).href, "章节链接已复制", "复制失败，请复制地址栏链接", true);
       heading.appendChild(button);
     });
   }
@@ -411,17 +490,21 @@
       });
     }
   }
-  window.addEventListener("resize", () => { syncSidebar(); if (window.innerWidth > 900) closeMenus(); });
+  window.addEventListener("resize", () => { syncSidebar(); if (window.innerWidth > COMPACT_TOPBAR_WIDTH) closeMenus(); });
   if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
   let saveScheduled = false;
   window.addEventListener("scroll", () => {
+    scheduleTocScrollRelease();
     if (saveScheduled) return;
     saveScheduled = true;
     window.requestAnimationFrame(() => { saveScheduled = false; saveReadingPosition(); });
   }, { passive: true });
+  window.addEventListener("scrollend", () => releaseTocScroll());
+  window.addEventListener("wheel", interruptTocScroll, { passive: true });
+  window.addEventListener("touchmove", interruptTocScroll, { passive: true });
   window.addEventListener("pagehide", saveReadingPosition);
   document.addEventListener("click", (event) => {
-    if (!event.target.closest("#mobile-topbar-links, [data-action='toggle-topbar-menu']")) closeMenus();
+    if (event.target.closest("#mobile-topbar-links a") || !event.target.closest("#mobile-topbar-links, [data-action='toggle-topbar-menu']")) closeMenus();
   });
   return { renderSidebar, renderBreadcrumb, renderToc, observeHeadings, scrollToHash, setActiveNav, setGroupExpanded, collapseSiblingGroups, toggleSidebar, renderTopbarMenu, toggleTopbarMenu, closeMenus, handleKeydown, renderReadingTools, saveReadingPosition, restoreReadingPosition };
 });

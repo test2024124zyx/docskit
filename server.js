@@ -17,6 +17,7 @@ const {
 const { searchDocuments } = require("./search-core");
 const { renderLlms, exportMarkdown } = require("./server-exports");
 const { apiConnectSources } = require("./server-api-policy");
+const { renderDocumentSection } = require("./document-view");
 
 const {
   escapeHtml,
@@ -332,6 +333,7 @@ function publicDocument(document, config, options = {}) {
     ...(document.apiReference ? { apiReference: document.apiReference } : {}),
     html: rendered.html,
     headings: rendered.headings,
+    presentation: rendered.presentation,
     updatedAt: document.updatedAt,
     createdAt: document.createdAt,
     icon: icon.name,
@@ -453,19 +455,6 @@ function serializeInlineJson(value) {
     .replace(/&/g, "\\u0026")
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
-}
-
-function formatUpdatedAt(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("zh-CN");
-}
-
-function renderDocumentSection(documentData) {
-  const category = documentData.path.includes("/") ? documentData.path.split("/").slice(0, -1).join(" / ") : "DOCUMENT";
-  const hasH1 = (documentData.headings || []).some((heading) => heading.level === 1);
-  const description = documentData.description ? `<p class="lead doc-description">${escapeHtml(documentData.description)}</p>` : "";
-  const meta = formatUpdatedAt(documentData.updatedAt);
-  return `<section class="doc-section markdown-section" id="doc-page" data-title="${escapeHtml(documentData.title)}"><div class="section-kicker"><span class="kicker-line"></span>${escapeHtml(category)}</div>${hasH1 ? "" : `<h1 class="doc-title">${escapeHtml(documentData.title)}</h1>${description}`}<div class="doc-meta"><span>${escapeHtml(documentData.path)}</span><span>·</span><span>${meta ? `更新于 ${meta}` : ""}</span></div><div class="markdown-body">${documentData.html}</div></section>`;
 }
 
 function replaceHeadMeta(template, attribute, name, value) {

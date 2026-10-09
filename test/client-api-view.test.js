@@ -30,6 +30,19 @@ test("真实请求代码使用原生页签，方向键与 Home/End 同步焦点�
   assert.equal(tabs.length, 5);
   assert.ok(tabs.every((tab) => tab.tagName === "BUTTON" && tab.type === "button"));
   assert.equal(tabs.filter((tab) => tab.tabIndex === 0).length, 1);
+  // JSDOM 不计算布局，用窄视口几何值验证真实页签事件只滚动语言条。
+  const tabWidth = 100;
+  const viewportWidth = 240;
+  const viewportLeft = 20;
+  const focusOptions = [];
+  Object.defineProperties(list, { clientWidth: { value: viewportWidth }, clientLeft: { value: 0 } });
+  list.getBoundingClientRect = () => ({ left: viewportLeft, right: viewportLeft + viewportWidth });
+  list.scrollTop = 73;
+  tabs.forEach((tab, index) => {
+    tab.getBoundingClientRect = () => ({ left: viewportLeft + index * tabWidth - list.scrollLeft, right: viewportLeft + (index + 1) * tabWidth - list.scrollLeft });
+    const originalFocus = tab.focus.bind(tab);
+    tab.focus = (options) => { focusOptions.push(options); originalFocus(options); };
+  });
   const panel = () => container.querySelector('[role="tabpanel"]');
   const press = async (tab, key, target) => {
     tab.focus();
@@ -40,6 +53,10 @@ test("真实请求代码使用原生页签，方向键与 Home/End 同步焦点�
     assert.equal(window.document.activeElement, tabs[target]);
     assert.equal(panel().getAttribute("aria-labelledby"), tabs[target].id);
     assert.equal(tabs[target].getAttribute("aria-controls"), panel().id);
+    assert.deepEqual(focusOptions.at(-1), { preventScroll: true });
+    assert.equal(list.scrollTop, 73);
+    assert.ok(tabs[target].getBoundingClientRect().left >= viewportLeft);
+    assert.ok(tabs[target].getBoundingClientRect().right <= viewportLeft + viewportWidth);
   };
   await press(tabs[0], "End", 4);
   assert.ok(panel().textContent.includes("import requests"));
@@ -55,6 +72,65 @@ test("真实请求代码使用原生页签，方向键与 Home/End 同步焦点�
   assert.equal(tabs[0].tabIndex, -1);
   assert.equal(requests.length, 1);
   assert.deepEqual(errors, []);
+});
+
+test("复制成功提示在切换语言及重新执行请求后清空", async (t) => {
+  const { window, container, requests } = await mountSnippets(t);
+  Object.defineProperty(window.navigator, "clipboard", { value: { writeText: async () => {} } });
+  const status = () => container.querySelector('[role="status"]').textContent;
+  const copy = () => container.querySelector('[aria-label="复制请求代码"]').click();
+  copy();
+  await waitFor(() => status().includes("已复制"), "首次复制未完成");
+  button(container, "Python").click();
+  await waitFor(() => container.querySelector('[role="tabpanel"] pre').textContent.includes("import requests"), "语言未切换");
+  assert.equal(status(), "");
+  copy();
+  await waitFor(() => status().includes("已复制"), "新语言复制未完成");
+  button(container, "Execute").click();
+  await waitFor(() => requests.length === 2 && !button(container, "Execute")?.disabled, "新请求未完成");
+  assert.equal(status(), "");
+});
+
+test("旧复制异步结果不能覆盖新语言的反馈或触发过期兼容复制", async (t) => {
+  const { window, container } = await mountSnippets(t);
+  const pending = [];
+  let compatibilityCopies = 0;
+  Object.defineProperty(window.navigator, "clipboard", { value: { writeText: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) } });
+  window.document.execCommand = () => { compatibilityCopies += 1; return true; };
+  const status = () => container.querySelector('[role="status"]').textContent;
+  const copy = () => container.querySelector('[aria-label="复制请求代码"]').click();
+  copy();
+  button(container, "Python").click();
+  await waitFor(() => container.querySelector('[role="tabpanel"] pre').textContent.includes("import requests"), "语言未切换");
+  pending[0].resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(status(), "");
+  copy();
+  button(container, "JavaScript (Node.js)").click();
+  await waitFor(() => container.querySelector('[role="tabpanel"] pre').textContent.includes("const response"), "JavaScript 未显示");
+  copy();
+  pending[2].resolve();
+  await waitFor(() => status().includes("已复制"), "当前复制未完成");
+  pending[1].reject(new Error("旧请求已失去权限"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(status(), "已复制请求代码");
+  assert.equal(compatibilityCopies, 0);
+});
+
+test("重新执行相同请求后，旧复制结果不能标记新请求代码已复制", async (t) => {
+  const { window, container, requests } = await mountSnippets(t);
+  let resolveCopy;
+  Object.defineProperty(window.navigator, "clipboard", { value: { writeText: () => new Promise((resolve) => { resolveCopy = resolve; }) } });
+  container.querySelector('[aria-label="复制请求代码"]').click();
+  const status = () => container.querySelector('[role="status"]').textContent;
+  await waitFor(() => status().includes("正在复制"), "未显示复制进行中状态");
+  button(container, "Execute").click();
+  await waitFor(() => requests.length === 2 && !button(container, "Execute")?.disabled, "重复请求未完成");
+  assert.equal(status(), "");
+  resolveCopy();
+  // 等待真实 React 更新队列，确保迟到反馈不能重新出现。
+  await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+  assert.equal(status(), "");
 });
 
 test("折叠恢复保留所选语言，兼容复制保留完整代码并恢复焦点", async (t) => {

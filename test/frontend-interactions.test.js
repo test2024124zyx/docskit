@@ -14,10 +14,11 @@ async function mount({ response, width = 1200, site = {}, health, api } = {}) {
   const dom = new JSDOM(fs.readFileSync(path.join(root, "index.html"), "utf8"), { url: "http://docs.test/", runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   const requests = [];
+  const observers = [];
   window.innerWidth = width;
   window.scrollTo = () => {};
   window.HTMLElement.prototype.scrollIntoView = function () { this.dataset.scrolled = "true"; };
-  window.IntersectionObserver = class { observe() {} disconnect() {} };
+  window.IntersectionObserver = class { constructor(callback) { observers.push(callback); } observe() {} disconnect() {} };
   window.requestAnimationFrame = (callback) => callback();
   if (api) window.DocsKitApi = api;
   const tree = [{ type: "directory", path: "guide", title: "指南", children: [{ type: "file", path: "guide/intro.md", title: "入门" }, { type: "file", path: "guide/api.md", title: "接口" }] }];
@@ -33,11 +34,11 @@ async function mount({ response, width = 1200, site = {}, health, api } = {}) {
         : { results: [{ path: "guide/api.md", title: "接口", snippet: "认证接口" }] };
     return { ok: true, status: 200, json: async () => payload };
   };
-  for (const file of ["search-core.js", "client-search.js", "client-navigation.js", "script.js"]) {
+  for (const file of ["search-core.js", "client-search.js", "client-navigation.js", "document-view.js", "script.js"]) {
     if (fs.existsSync(path.join(root, file))) vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), dom.getInternalVMContext(), { filename: pathToFileURL(path.join(root, file)).href });
   }
   for (let attempt = 0; attempt < 30 && !window.document.querySelector("#doc-page"); attempt += 1) await delay();
-  return { window, document: window.document, requests, cleanup: () => dom.window.close() };
+  return { window, document: window.document, requests, observers, cleanup: () => dom.window.close() };
 }
 
 test("新关键词输入后和请求失败时不能操作旧搜索结果", async () => {
@@ -152,6 +153,171 @@ test("阅读入口复用导航标题并提供前后篇、章节链接和移动�
   } finally { mounted.cleanup(); }
 });
 
+test("关闭移动目录后焦点进入目标章节，键盘继续从正文阅读", async () => {
+  const mounted = await mount({ width: 600 });
+  try {
+    const { document } = mounted;
+    const details = document.querySelector(".mobile-toc");
+    details.open = true;
+    const link = details.querySelector('[data-heading-id="auth"]');
+    link.focus();
+    link.click();
+    const heading = document.getElementById("auth");
+    assert.equal(details.open, false);
+    assert.equal(document.activeElement, heading);
+    assert.equal(heading.tabIndex, -1);
+    assert.equal(heading.dataset.scrolled, "true");
+    assert.equal(mounted.window.location.hash, "#auth");
+  } finally { mounted.cleanup(); }
+});
+
+test("页尾目录目标未相交时滚动结束仍能解锁，用户滚动会中断旧的平滑请求", async () => {
+  const mounted = await mount({ response: (endpoint) => endpoint.startsWith("/api/document") ? { ok: true, json: async () => ({ ...documentData(), headings: [{ id: "auth", level: 2, title: "认证" }, { id: "last", level: 2, title: "尾节" }], html: '<h2 id="auth">认证</h2><p>正文</p><h2 id="last">尾节</h2>' }) } : null });
+  try {
+    const { window, document, observers } = mounted;
+    const first = document.querySelector('#toc-list [data-heading-id="auth"]');
+    const last = document.querySelector('#toc-list [data-heading-id="last"]');
+    const observe = (id) => observers.at(-1)([{ target: document.getElementById(id), isIntersecting: true, intersectionRatio: 1 }]);
+    last.click();
+    observe("auth");
+    assert.equal(last.getAttribute("aria-current"), "location", "平滑滚动途经章节不应抢走目标高亮");
+    window.dispatchEvent(new window.Event("scrollend"));
+    observe("auth");
+    assert.equal(first.getAttribute("aria-current"), "location", "页尾无法进入观察区域时仍应恢复高亮更新");
+    last.click();
+    window.dispatchEvent(new window.Event("scroll"));
+    await delay(220);
+    observe("auth");
+    assert.equal(first.getAttribute("aria-current"), "location", "无 scrollend 的浏览器在滚动稳定后也应解锁");
+    for (const event of [new window.WheelEvent("wheel"), new window.Event("touchmove"), new window.KeyboardEvent("keydown", { key: "PageUp", bubbles: true })]) {
+      last.click();
+      (event.type === "keydown" ? document : window).dispatchEvent(event);
+      observe("auth");
+      assert.equal(first.getAttribute("aria-current"), "location", `${event.type} 应解除自动滚动目标`);
+    }
+    const frames = [];
+    window.requestAnimationFrame = (callback) => frames.push(callback);
+    delete document.getElementById("auth").dataset.scrolled;
+    delete document.getElementById("last").dataset.scrolled;
+    first.click();
+    last.click();
+    frames.splice(0).forEach((callback) => callback());
+    assert.equal(document.getElementById("auth").dataset.scrolled, undefined);
+    assert.equal(document.getElementById("last").dataset.scrolled, "true");
+    last.click();
+    window.dispatchEvent(new window.WheelEvent("wheel"));
+    delete document.getElementById("last").dataset.scrolled;
+    frames.splice(0).forEach((callback) => callback());
+    assert.equal(document.getElementById("last").dataset.scrolled, undefined, "手动滚动后不能执行排队的旧自动滚动");
+  } finally { mounted.cleanup(); }
+});
+
+test("网站链接菜单与导航抽屉互斥，关闭和跨断点时恢复可见焦点", async () => {
+  const mounted = await mount({ width: 600 });
+  try {
+    const { document, window } = mounted;
+    const menu = document.querySelector("#mobile-topbar-links");
+    const trigger = document.querySelector('[data-action="toggle-topbar-menu"]');
+    const sidebarTrigger = document.querySelector('[data-action="toggle-sidebar"]');
+    sidebarTrigger.click();
+    trigger.click();
+    assert.equal(document.querySelector("#sidebar").classList.contains("is-open"), false);
+    assert.equal(document.querySelector("main").hasAttribute("inert"), false);
+    assert.equal(document.activeElement, menu.querySelector("a"));
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(menu.hidden, true);
+    assert.equal(document.activeElement, trigger);
+    trigger.click();
+    menu.querySelector("a").click();
+    assert.equal(menu.hidden, true);
+    assert.equal(document.activeElement, trigger);
+    trigger.click();
+    window.innerWidth = 1000;
+    window.dispatchEvent(new window.Event("resize"));
+    assert.equal(menu.hidden, false);
+    assert.equal(document.activeElement, menu.querySelector("a"));
+    window.innerWidth = 1200;
+    window.dispatchEvent(new window.Event("resize"));
+    assert.equal(menu.hidden, true);
+    assert.equal(document.activeElement, document.querySelector(".topbar-link"));
+    window.innerWidth = 600;
+    trigger.click();
+    sidebarTrigger.click();
+    assert.equal(menu.hidden, true);
+    assert.equal(document.querySelector("#sidebar").classList.contains("is-open"), true);
+  } finally { mounted.cleanup(); }
+});
+
+test("阅读复制按钮展示进行中与成功失败反馈，重复点击不会并发复制", async () => {
+  const mounted = await mount({ response: (endpoint) => endpoint.startsWith("/api/document") ? { ok: true, json: async () => ({ ...documentData(), markdown: "## 认证\n正文" }) } : null });
+  let release;
+  try {
+    const { document, window } = mounted;
+    let calls = 0;
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: () => { calls += 1; return new Promise((resolve) => { release = resolve; }); } } });
+    const markdown = document.querySelector('[data-action="copy-markdown"]');
+    markdown.click();
+    markdown.click();
+    assert.equal(calls, 1);
+    assert.equal(markdown.textContent, "正在复制…");
+    assert.equal(markdown.getAttribute("aria-busy"), "true");
+    release();
+    await delay();
+    assert.equal(markdown.textContent, "已复制");
+    assert.equal(markdown.dataset.copyState, "success");
+    assert.equal(markdown.hasAttribute("aria-busy"), false);
+    assert.match(document.querySelector(".toast-region").textContent, /Markdown 已复制/);
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: undefined });
+    const headingCopy = document.querySelector('[data-action="copy-heading-link"]');
+    headingCopy.click();
+    await delay();
+    assert.equal(headingCopy.dataset.copyState, "error");
+    assert.match(headingCopy.getAttribute("aria-label"), /复制失败/);
+    assert.match(document.querySelector(".toast-region").textContent, /复制失败，请复制地址栏链接/);
+    Object.defineProperty(window.navigator, "clipboard", { value: { writeText: async () => {} } });
+    headingCopy.click();
+    await delay();
+    assert.equal(headingCopy.dataset.copyState, "success");
+    assert.match(headingCopy.getAttribute("aria-label"), /已复制/);
+    await delay(1850);
+    assert.equal(markdown.textContent, "复制 Markdown");
+    assert.equal(headingCopy.getAttribute("aria-label"), "复制“认证”章节链接");
+    assert.equal(headingCopy.hasAttribute("data-copy-state"), false);
+  } finally { release?.(); mounted.cleanup(); }
+});
+
+test("切换文档保留首屏下方的移动目录与标题链接，迟到复制不污染新页面", async () => {
+  const { renderMarkdown } = require("../markdown");
+  const mounted = await mount({ width: 600, response: (endpoint) => {
+    if (!endpoint.startsWith("/api/document")) return null;
+    const base = documentData(new URL(endpoint, "http://docs.test").searchParams.get("path"));
+    return { ok: true, json: async () => ({ ...base, ...renderMarkdown(`# ${base.title}\n\n## 认证\n\n正文`, base.path) }) };
+  } });
+  let release;
+  try {
+    const { document, window } = mounted;
+    const toc = document.querySelector(".mobile-toc");
+    const assertHeader = () => {
+      assert.equal(document.querySelector(".doc-header").nextElementSibling, toc);
+      assert.equal(toc.nextElementSibling.classList.contains("markdown-body"), true);
+      assert.ok(document.querySelector('.doc-header h1 [data-action="copy-heading-link"]'));
+      assert.equal(toc.querySelectorAll(".toc__link").length, 1);
+    };
+    assertHeader();
+    Object.defineProperty(window.navigator, "clipboard", { value: { writeText: () => new Promise((resolve) => { release = resolve; }) } });
+    const oldCopy = document.querySelector('.doc-header h1 [data-action="copy-heading-link"]');
+    oldCopy.click();
+    document.querySelector('[data-doc-path="guide/api.md"]').click();
+    await delay();
+    assertHeader();
+    assert.equal(oldCopy.isConnected, false);
+    release();
+    await delay();
+    assert.equal(document.querySelector(".toast-region").textContent, "");
+    assert.equal(document.querySelector('[data-action="copy-heading-link"]').hasAttribute("data-copy-state"), false);
+  } finally { release?.(); mounted.cleanup(); }
+});
+
 test("键盘搜索选项关联输入框并保持可见，输入法确认不会打开文档", async () => {
   const mounted = await mount();
   try {
@@ -232,8 +398,11 @@ test("同语言代码示例可独立切换，语言同步保留其他组已选�
   } finally { mounted.cleanup(); }
 });
 
-test("章节搜索保留锚点并安全高亮用户文本", async () => {
-  const mounted = await mount({ response: (endpoint) => endpoint.startsWith("/api/search") ? { ok: true, json: async () => ({ results: [{ path: "guide/api.md", title: "接口", sectionTitle: "认证", hash: "#auth", snippet: '<img src=x onerror="alert(1)">认证' }] }) } : null });
+test("章节搜索去除重复标题，保留不同章节、锚点和安全高亮", async () => {
+  const mounted = await mount({ response: (endpoint) => endpoint.startsWith("/api/search") ? { ok: true, json: async () => ({ results: [
+    { path: "guide/api.md", title: "接口", sectionTitle: "认证", hash: "#auth", snippet: '<img src=x onerror="alert(1)">认证' },
+    { path: "guide/openapi.md", title: "OpenAPI 与在线调试", sectionTitle: "OpenAPI 与在线调试", hash: "#openapi", snippet: "在线认证示例" }
+  ] }) } : null });
   try {
     const { document, window } = mounted;
     document.querySelector('[data-action="open-search"]').click();
@@ -242,7 +411,8 @@ test("章节搜索保留锚点并安全高亮用户文本", async () => {
     input.dispatchEvent(new window.Event("input", { bubbles: true }));
     await delay(220);
     assert.equal(document.querySelector(".search-result").hash, "#auth");
-    assert.match(document.querySelector(".search-result strong").textContent, /接口 · 认证/);
+    const titles = Array.from(document.querySelectorAll(".search-result strong"), (title) => title.textContent);
+    assert.deepEqual(titles, ["接口 · 认证", "OpenAPI 与在线调试"]);
     assert.equal(document.querySelector(".search-result mark").textContent, "认证");
     assert.equal(document.querySelector(".search-result img"), null);
     input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));

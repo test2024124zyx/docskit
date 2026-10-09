@@ -137,7 +137,7 @@ test("启动生成 API 渲染器产物并提供适配和示例生成模块", asy
     assert.match(renderer.headers.get("content-type"), /^text\/javascript/);
     assert.equal(renderer.headers.get("cache-control"), "no-cache, must-revalidate");
     assert.equal(await renderer.text(), require("../build-api-renderer").createBundle().code);
-    for (const resource of ["client-api-renderer.js", "client-api-snippets.js", "client-api-view.js"]) {
+    for (const resource of ["client-api-renderer.js", "client-api-snippets.js", "client-api-view.js", "document-view.js"]) {
       const response = await fetch(`${baseUrl}/${resource}`);
       assert.equal(response.status, 200, resource);
       assert.equal(response.headers.get("cache-control"), "no-cache, must-revalidate", resource);

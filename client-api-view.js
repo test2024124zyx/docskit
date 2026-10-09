@@ -6,7 +6,7 @@
 })(typeof window === "undefined" ? globalThis : window, function () {
   "use strict";
 
-  async function copyText(document, text) {
+  async function copyText(document, text, isCurrent) {
     const window = document.defaultView;
     try {
       if (window.navigator.clipboard?.writeText) {
@@ -14,6 +14,8 @@
         return;
       }
     } catch { /* 剪贴板权限受限时仍尝试 HTTP 页面可用的兼容复制。 */ }
+    // 语言或请求已切换时，不再复制旧代码，也不能打断当前键盘焦点。
+    if (!isCurrent()) return;
     const focused = document.activeElement;
     const selection = window.getSelection();
     const ranges = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange());
@@ -43,16 +45,32 @@
       const entries = Array.from(generators.entries());
       const [selected, setSelected] = React.useState(entries[0]?.[0]);
       const [expanded, setExpanded] = React.useState(requestSnippetsSelectors.getDefaultExpanded());
-      const [copyMessage, setCopyMessage] = React.useState("");
+      const [copyFeedback, setCopyFeedback] = React.useState(null);
+      const copySequence = React.useRef(0);
       const id = React.useId();
-      if (!entries.length) return null;
-      const active = generators.has(selected) ? selected : entries[0][0];
+      const active = generators.has(selected) ? selected : entries[0]?.[0];
       const generator = generators.get(active);
-      const code = generator.get("fn")(request);
+      const code = generator ? generator.get("fn")(request) : "";
+      const copyContext = React.useMemo(() => ({}), [request, active, code]);
+      const currentContext = React.useRef(copyContext);
+      currentContext.current = copyContext;
+      React.useEffect(() => () => { copySequence.current += 1; }, []);
+      if (!entries.length) return null;
+      const copyMessage = copyFeedback?.context === copyContext ? copyFeedback.message : "";
       const SyntaxHighlighter = getComponent("SyntaxHighlighter", true);
       const contentId = `${id}-content`;
       const panelId = `${id}-panel`;
       const tabId = (key) => `${id}-tab-${key}`;
+
+      function revealTab(tab) {
+        const list = tab.parentElement;
+        const bounds = tab.getBoundingClientRect();
+        const left = list.getBoundingClientRect().left + list.clientLeft;
+        const right = left + list.clientWidth;
+        // 只移动语言条；滚动整页会让用户失去当前响应和代码的位置。
+        if (bounds.left < left) list.scrollLeft -= left - bounds.left;
+        else if (bounds.right > right) list.scrollLeft += bounds.right - right;
+      }
 
       function navigate(event, current) {
         let next;
@@ -63,7 +81,9 @@
         else return;
         event.preventDefault();
         setSelected(entries[next][0]);
-        event.currentTarget.parentElement.querySelectorAll('[role="tab"]')[next].focus();
+        const tab = event.currentTarget.parentElement.querySelectorAll('[role="tab"]')[next];
+        tab.focus({ preventScroll: true });
+        revealTab(tab);
       }
 
       return element("div", { className: "request-snippets" },
@@ -73,15 +93,22 @@
             entries.map(([key, value], index) => element("button", {
               type: "button", role: "tab", id: tabId(key), key, className: `btn${active === key ? " active" : ""}`,
               "aria-controls": panelId, "aria-selected": active === key, tabIndex: active === key ? 0 : -1,
-              onClick: () => setSelected(key), onKeyDown: (event) => navigate(event, index)
+              onClick: (event) => { setSelected(key); revealTab(event.currentTarget); }, onKeyDown: (event) => navigate(event, index)
             }, value.get("title")))
           ),
           element("div", { role: "tabpanel", id: panelId, "aria-labelledby": tabId(active), tabIndex: 0 },
             element("div", { className: "docskit-api-copy-toolbar" },
               // 官方复制按钮的名称固定为“复制路径”，代码面板使用语义明确的原生按钮。
               element("button", { type: "button", className: "btn", "aria-label": "复制请求代码", onClick: async (event) => {
-                try { await copyText(event.currentTarget.ownerDocument, code); setCopyMessage("已复制请求代码"); }
-                catch { setCopyMessage("复制失败，请选中代码手动复制。"); }
+                const sequence = ++copySequence.current;
+                const isCurrent = () => currentContext.current === copyContext && copySequence.current === sequence;
+                setCopyFeedback({ context: copyContext, message: "正在复制请求代码…" });
+                try {
+                  await copyText(event.currentTarget.ownerDocument, code, isCurrent);
+                  if (isCurrent()) setCopyFeedback({ context: copyContext, message: "已复制请求代码" });
+                } catch {
+                  if (isCurrent()) setCopyFeedback({ context: copyContext, message: "复制失败，请选中代码手动复制。" });
+                }
               } }, "复制代码"),
               element("span", { role: "status", "aria-live": "polite" }, copyMessage)
             ),

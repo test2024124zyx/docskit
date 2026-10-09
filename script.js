@@ -23,6 +23,9 @@
     searchPreviousFocus: null
   };
   let iconGradientSequence = 0;
+  const THEME_STORAGE_KEY = "docs-theme";
+  let explicitTheme = "";
+  let systemThemeQuery = null;
 
   const $ = (selector) => document.querySelector(selector);
   const sidebar = $("#sidebar");
@@ -196,14 +199,43 @@
     return build ? `${target}${suffix}` : `/?doc=${encodeURIComponent(relativePath)}${suffix}`;
   }
 
-  function setTheme(theme) {
+  function syncThemeButton(button = $('[data-action="toggle-theme"]')) {
+    if (!button) return;
+    const dark = body.dataset.theme === "dark";
+    const label = dark ? "切换到浅色主题" : "切换到深色主题";
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(dark));
+    button.title = label;
+  }
+
+  function setTheme(theme, explicit = true) {
     body.dataset.theme = theme;
+    syncThemeButton();
     window.DocsKitApi?.updateTheme?.(theme);
-    try { localStorage.setItem("docs-theme", theme); } catch (error) { /* 存储不可用时仅更新当前页面。 */ }
+    if (explicit) {
+      // 即使存储失败，当前页面也应尊重用户刚刚选择的主题。
+      explicitTheme = theme;
+      try { window.localStorage.setItem(THEME_STORAGE_KEY, theme); } catch (error) { /* 存储不可用时仅更新当前页面。 */ }
+    }
   }
 
   function getTheme() {
-    try { return localStorage.getItem("docs-theme") || "light"; } catch (error) { return "light"; }
+    try {
+      const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+      explicitTheme = saved === "light" || saved === "dark" ? saved : "";
+    } catch (error) { /* 存储不可用时保持系统默认。 */ }
+    return explicitTheme || (systemThemeQuery?.matches ? "dark" : "light");
+  }
+
+  function initializeTheme() {
+    try { systemThemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)") || null; } catch (error) { /* 媒体查询不可用时使用浅色默认。 */ }
+    setTheme(getTheme(), false);
+    const followSystem = (event) => {
+      // 自动主题不写入偏好，避免初始化后失去系统跟随能力。
+      if (!explicitTheme) setTheme(event.matches ? "dark" : "light", false);
+    };
+    if (typeof systemThemeQuery?.addEventListener === "function") systemThemeQuery.addEventListener("change", followSystem);
+    else systemThemeQuery?.addListener?.(followSystem);
   }
 
   function showToast(message, type) {
@@ -548,7 +580,7 @@
       theme.className = "theme-button icon-button";
       theme.type = "button";
       theme.dataset.action = "toggle-theme";
-      theme.setAttribute("aria-label", "切换主题");
+      syncThemeButton(theme);
       theme.innerHTML = `${iconSvg("sun", "theme-icon theme-icon--light")}${iconSvg("moon", "theme-icon theme-icon--dark")}`;
       actions.appendChild(theme);
     }
@@ -694,11 +726,10 @@
     state.failedDocument = null;
     state.currentDocument = documentData;
     renderBreadcrumb(documentData);
-    const category = documentData.path.includes("/") ? documentData.path.split("/").slice(0, -1).join(" / ") : "DOCUMENT";
-    const hasH1 = (documentData.headings || []).some((heading) => heading.level === 1);
     const article = $("#doc-content");
     article.setAttribute("aria-busy", "false");
-    article.innerHTML = `<section class="doc-section markdown-section" id="doc-page" data-title="${escapeHtml(documentData.title)}"><div class="section-kicker"><span class="kicker-line"></span>${escapeHtml(category)}</div>${hasH1 ? "" : `<h1 class="doc-title">${escapeHtml(documentData.title)}</h1>${documentData.description ? `<p class="lead doc-description">${escapeHtml(documentData.description)}</p>` : ""}`}<div class="doc-meta"><span>${escapeHtml(documentData.path)}</span><span>·</span><span>更新于 ${new Date(documentData.updatedAt).toLocaleDateString("zh-CN")}</span></div><div class="markdown-body">${documentData.html}</div></section>`;
+    const documentView = window.DocsKitDocument || (typeof require === "function" ? require("./document-view.js") : null);
+    article.innerHTML = documentView.renderDocumentSection(documentData);
     renderMarkdownIcons(article);
     renderMermaid(article);
     highlightCodeBlocks(article);
@@ -867,7 +898,7 @@
   });
 
   (async function bootstrap() {
-    setTheme(getTheme());
+    initializeTheme();
     try {
       let payload;
       const staticDataElement = document.getElementById("docskit-static-data");

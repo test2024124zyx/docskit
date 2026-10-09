@@ -90,7 +90,7 @@ test("静态 API 页面使用本地资源、完整合同、相同搜索字段和
   await fs.writeFile(path.join(options.docsDir, "private.json"), JSON.stringify({ ...spec, info: { title: "不可公开的私有合同", version: "1" } }));
   await fs.writeFile(path.join(options.docsDir, "private.md"), "---\nhidden: true\nopenapi: private.json\n---\n# 不可公开的说明\n");
   await buildStaticSite({ ...options, config: { site: { url: "https://docs.example.org/reference/" } } });
-  for (const asset of ["search-core.js", "client-api.js", "client-api-renderer.js", "client-api-snippets.js", "client-api-view.js", "vendor/api-renderer.js", "vendor/swagger-ui-bundle.js", "vendor/swagger-ui.css", "vendor/oauth2-redirect.html", "vendor/oauth2-redirect.js"]) await fs.access(path.join(options.outDir, asset));
+  for (const asset of ["search-core.js", "document-view.js", "client-api.js", "client-api-renderer.js", "client-api-snippets.js", "client-api-view.js", "vendor/api-renderer.js", "vendor/swagger-ui-bundle.js", "vendor/swagger-ui.css", "vendor/oauth2-redirect.html", "vendor/oauth2-redirect.js"]) await fs.access(path.join(options.outDir, asset));
   const rendererBundle = await fs.readFile(path.join(options.outDir, "vendor", "api-renderer.js"), "utf8");
   assert.equal(rendererBundle, require("../build-api-renderer").createBundle().code);
   assert.ok(Buffer.byteLength(rendererBundle) > 0);
@@ -105,6 +105,7 @@ test("静态 API 页面使用本地资源、完整合同、相同搜索字段和
   assert.match(html, /src="\/reference\/search-core\.js"/);
   assert.match(html, /src="\/reference\/client-api\.js"/);
   assert.match(html, /src="\/reference\/client-api-view\.js"/);
+  assert.match(html, /src="\/reference\/document-view\.js"/);
   assert.match(html, /https:\/\/docs\.example\.org\/reference\/api\.html/);
   const data = JSON.parse(await fs.readFile(path.join(options.outDir, "data", "documents", "api.md.json"), "utf8"));
   assert.deepEqual(data.apiReference.spec, spec);
@@ -123,7 +124,7 @@ test("静态 API 页面使用本地资源、完整合同、相同搜索字段和
   const headers = await fs.readFile(path.join(options.outDir, "_headers"), "utf8");
   assert.match(headers, /connect-src 'self' https:\/\/api\.example\.org/);
   assert.match(headers, /\/reference\/assets\/\*\.svg/);
-  for (const resource of ["client-api.js", "client-api-renderer.js", "client-api-snippets.js", "client-api-view.js", "script.js", "styles.css", "search-core.js", "vendor/api-renderer.js", "vendor/swagger-ui-bundle.js", "vendor/swagger-ui.css", "vendor/oauth2-redirect.js", "vendor/katex/katex.min.css"]) {
+  for (const resource of ["document-view.js", "client-api.js", "client-api-renderer.js", "client-api-snippets.js", "client-api-view.js", "script.js", "styles.css", "search-core.js", "vendor/api-renderer.js", "vendor/swagger-ui-bundle.js", "vendor/swagger-ui.css", "vendor/oauth2-redirect.js", "vendor/katex/katex.min.css"]) {
     assert.ok(headers.includes(`/reference/${resource}\n  Cache-Control: no-cache, must-revalidate\n`));
   }
   assert.doesNotMatch(headers, /no-store|fonts\/.*Cache-Control/);

@@ -34,7 +34,7 @@ const { exportMarkdown, renderLlms } = require("./server-exports");
 const PROJECT_TEMPLATE_PATH = path.join(ROOT_DIR, "index.html");
 const BUILD_MARKER_NAME = ".docskit-build.json";
 const BUILD_MARKER = { generator: "docskit", format: 1 };
-const CLIENT_FILES = ["script.js", "styles.css", "search-core.js", "client-search.js", "client-navigation.js", "client-api.js", "client-api-renderer.js", "client-api-snippets.js", "client-api-view.js"];
+const CLIENT_FILES = ["script.js", "styles.css", "search-core.js", "client-search.js", "client-navigation.js", "document-view.js", "client-api.js", "client-api-renderer.js", "client-api-snippets.js", "client-api-view.js"];
 const REVALIDATED_RESOURCES = [...CLIENT_FILES, ...assets.SWAGGER_UI_FILES.filter((file) => /\.(js|css)$/.test(file)).map((file) => `vendor/${file}`), "vendor/api-renderer.js", "vendor/mermaid.min.js", "vendor/highlight.min.js", "vendor/katex/katex.min.css"];
 const STATIC_HEADERS = [
   "/*",
@@ -191,7 +191,7 @@ function rewriteTemplate(template, base) {
   return template
     .replace(/href="styles\.css"/i, `href="${publicPath(base, "styles.css")}"`)
     .replace(/href="\/vendor\/katex\/katex\.min\.css"/i, `href="${publicPath(base, "vendor/katex/katex.min.css")}"`)
-    .replace(/src="((?:script|search-core|client-search|client-navigation|client-api(?:-renderer|-snippets|-view)?)\.js)"/gi, (_, name) => `src="${publicPath(base, name)}"`)
+    .replace(/src="((?:script|search-core|client-search|client-navigation|document-view|client-api(?:-renderer|-snippets|-view)?)\.js)"/gi, (_, name) => `src="${publicPath(base, name)}"`)
     .replace(/(<a\s+class="brand"\s+href=")[^"]*"/i, `$1${publicPath(base, "")}"`);
 }
 

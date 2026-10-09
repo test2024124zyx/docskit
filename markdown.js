@@ -892,8 +892,18 @@ function renderMarkdown(source, currentPath, options = {}) {
   const renderOptions = normalizeRenderOptions(options);
   const context = createContext(currentPath, parsed.references, parsed.footnotes, renderOptions.links);
   const state = createRenderState();
-  const html = renderBlocks(parsed.nodes, context, {}, state, renderOptions) + renderFootnotes(context, state, renderOptions);
-  return { html, headings: state.headings };
+  const blocks = parsed.nodes.map((node) => renderBlocks([node], context, {}, state, renderOptions));
+  const html = blocks.join("\n") + renderFootnotes(context, state, renderOptions);
+  // 只提升开篇一级标题，并记录本次输出中的确切边界，完整 HTML 合同保持不变。
+  const hasTitle = parsed.nodes[0]?.type === "heading" && parsed.nodes[0].level === 1;
+  const opening = parsed.nodes[hasTitle ? 1 : 0];
+  const presentation = {
+    titleHtml: hasTitle ? blocks[0] : "",
+    titleText: hasTitle ? state.headings[0].title : "",
+    bodyOffset: hasTitle ? blocks[0].length + (blocks.length > 1 ? 1 : 0) : 0,
+    openingParagraph: opening?.type === "paragraph" ? stripMarkdown(opening.lines.join("\n")) : ""
+  };
+  return { html, headings: state.headings, presentation };
 }
 
 module.exports = {

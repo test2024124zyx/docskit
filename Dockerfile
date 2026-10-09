@@ -17,7 +17,7 @@ RUN node build-api-renderer.js
 # 复制服务端拆分模块、Markdown 解析器和媒体类型规则，保证生产镜像与源码运行链路一致。
 COPY server.js server-assets.js server-cache.js server-config.js server-exports.js server-filesystem.js server-index.js server-lifecycle.js server-seo.js server-api-policy.js ./
 COPY skill-archive.js markdown.js markdown-code.js markdown-text.js media-types.js content-search.js openapi.js openapi-examples.js ./
-COPY index.html script.js styles.css search-core.js client-search.js client-navigation.js client-api.js client-api-renderer.js client-api-snippets.js client-api-view.js ./
+COPY index.html script.js styles.css search-core.js client-search.js client-navigation.js document-view.js client-api.js client-api-renderer.js client-api-snippets.js client-api-view.js ./
 COPY docs ./docs
 COPY skills/install.md ./skills/install.md
 COPY skills/docskit-doc-writing ./skills/docskit-doc-writing

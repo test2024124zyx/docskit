@@ -97,7 +97,9 @@
       item.innerHTML = iconSvg(result.icon, "search-result__icon", result.iconColors);
       const copy = document.createElement("span");
       copy.className = "search-result__copy";
-      for (const [tag, value] of [["strong", result.sectionTitle ? `${result.title} · ${result.sectionTitle}` : result.title], ["small", result.path], ["em", result.snippet || result.description || ""]]) {
+      // 文档一级标题常与页面同名，只为不同章节补充定位信息。
+      const title = result.sectionTitle && result.sectionTitle !== result.title ? `${result.title} · ${result.sectionTitle}` : result.title;
+      for (const [tag, value] of [["strong", title], ["small", result.path], ["em", result.snippet || result.description || ""]]) {
         const text = document.createElement(tag);
         appendHighlightedText(text, String(value || ""));
         copy.appendChild(text);
