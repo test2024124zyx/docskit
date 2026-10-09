@@ -25,7 +25,8 @@ async function runJavaScript(request) {
 
 function runPython(request, { fail = false } = {}) {
   const harness = `import io, json, sys, types
-payload = json.load(sys.stdin)
+# Node 始终发送 UTF-8 字节，协议解码不能依赖 Python 所在系统的默认代码页。
+payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
 handles, calls = [], []
 def fake_open(name, mode):
     assert mode == "rb"
@@ -56,7 +57,11 @@ except Exception as exception:
     error = str(exception)
 print(json.dumps({"calls": calls, "closed": [handle.closed for handle in handles], "error": error}))
 `;
-  const result = spawnSync(pythonCommand, ["-c", harness], { input: JSON.stringify({ code: snippets.python(request), fail }), encoding: "utf8", windowsHide: true });
+  // 固定模拟 Windows 非 UTF-8 管道，防止本机默认编码掩盖中文、Emoji 和文件名损坏。
+  const result = spawnSync(pythonCommand, ["-c", harness], {
+    input: JSON.stringify({ code: snippets.python(request), fail }), encoding: "utf8", windowsHide: true,
+    env: { ...process.env, PYTHONUTF8: "0", PYTHONIOENCODING: "cp1252:surrogateescape" }
+  });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   return JSON.parse(result.stdout);
 }
